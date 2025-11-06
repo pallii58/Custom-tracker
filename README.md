@@ -72,6 +72,8 @@ Prossimi passi consigliati
 
 Se vuoi, proseguo e implemento anche il backend Node/Express o l'integrazione con corrieri. Altrimenti posso già preparare il deploy su Vercel per te.
 
+<!-- Force redeploy -->
+
 Integrazione con servizi di terze parti (es. Parcels API)
 -------------------------------------------------------
 Se hai una API esterna (come Parcels) che richiede un token, non inserirla nel client: usa un proxy server-side per mantenere il token segreto.
