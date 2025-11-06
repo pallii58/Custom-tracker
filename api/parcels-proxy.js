@@ -20,7 +20,7 @@ module.exports = async (req, res) => {
 
     // Replace the path below with the real Parcels API path for tracking lookup.
     // Example placeholder: `${base}/v1/trackings/${tracking}`
-    const path = new URL(`${base}/api/v3/trackings/${encodeURIComponent(tracking)}`)
+    const path = new URL(`${base}/v3/trackings/${encodeURIComponent(tracking)}`)
 
     const options = {
       method: 'GET',
