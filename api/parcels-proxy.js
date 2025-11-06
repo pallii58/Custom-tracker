@@ -12,7 +12,7 @@ const https = require('https')
 module.exports = async (req, res) => {
   try {
     const token = process.env.PARCELS_API_TOKEN
-    const base = process.env.PARCELS_API_BASE || 'https://api.parcelsapp.com'
+    const base = process.env.PARCELS_API_BASE || 'https://api.parcl.com'
     if (!token) return res.status(500).json({ error: 'PARCELS_API_TOKEN not set' })
 
     const tracking = req.query.tracking
@@ -20,7 +20,7 @@ module.exports = async (req, res) => {
 
     // Replace the path below with the real Parcels API path for tracking lookup.
     // Example placeholder: `${base}/v1/trackings/${tracking}`
-    const path = new URL(`${base}/v3/trackings/${encodeURIComponent(tracking)}`)
+    const path = new URL(`${base}/v1/trackings/${encodeURIComponent(tracking)}`)
 
     const options = {
       method: 'GET',
