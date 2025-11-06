@@ -11,8 +11,19 @@ const https = require('https')
 
 module.exports = async (req, res) => {
   try {
-    const token = process.env.PARCELS_API_TOKEN
-    const base = process.env.PARCELS_API_BASE || 'https://api.parcelsapp.com'
+    // Prefer environment variable (secure). If not set, try to read a local
+    // server-side secrets file for quick testing (server/secrets.js).
+    // IMPORTANT: do NOT commit server/secrets.js to your repo.
+    let token = process.env.PARCELS_API_TOKEN
+    let base = process.env.PARCELS_API_BASE || 'https://api.parcelsapp.com'
+    try {
+      const secrets = require('../server/secrets')
+      token = token || secrets.PARCELS_API_TOKEN
+      base = base || secrets.PARCELS_API_BASE
+    } catch (e) {
+      // no local secrets file, continue
+    }
+
     if (!token) return res.status(500).json({ error: 'PARCELS_API_TOKEN not set' })
 
     const tracking = req.query.tracking
