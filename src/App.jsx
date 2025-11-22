@@ -27,17 +27,36 @@ export default function App() {
         ? `http://localhost:3000/parcels?tracking=${encodeURIComponent(trackingCode)}`
         : `/api/parcels-proxy?tracking=${encodeURIComponent(trackingCode)}`
 
-      const res = await fetch(proxyUrl)
+      let res
+      try {
+        res = await fetch(proxyUrl)
+      } catch (fetchError) {
+        // Errore di rete (fetch fallito)
+        const networkError = {
+          message: 'Errore di connessione',
+          type: 'NetworkError',
+          details: fetchError.message || 'Impossibile connettersi al server',
+          url: proxyUrl,
+          originalError: fetchError.message
+        }
+        setError('Errore di connessione al server')
+        setErrorDetails(networkError)
+        throw new Error('Errore di connessione')
+      }
       
       if (!res.ok) {
         let errorData
+        let responseText = ''
         try {
-          errorData = await res.json()
+          responseText = await res.text()
+          errorData = JSON.parse(responseText)
         } catch (e) {
+          // Se non è JSON, usa il testo della risposta
           errorData = { 
             error: `Errore HTTP ${res.status}`, 
             status: res.status,
-            statusText: res.statusText 
+            statusText: res.statusText,
+            rawResponse: responseText.substring(0, 500)
           }
         }
         
@@ -47,8 +66,9 @@ export default function App() {
           status: res.status,
           statusText: res.statusText,
           message: errorMessage,
-          details: errorData.details || errorData.hint || errorData,
-          url: proxyUrl
+          details: errorData.details || errorData.hint || errorData.rawResponse || errorData,
+          url: proxyUrl,
+          fullError: errorData
         }
         
         setError(errorMessage)
@@ -56,7 +76,22 @@ export default function App() {
         throw new Error(errorMessage)
       }
 
-      const data = await res.json()
+      let data
+      try {
+        data = await res.json()
+      } catch (parseError) {
+        // Errore nel parsing JSON
+        const parseErrorDetails = {
+          message: 'Errore nel parsing della risposta',
+          type: 'ParseError',
+          details: parseError.message || 'La risposta non è un JSON valido',
+          url: proxyUrl,
+          status: res.status
+        }
+        setError('Errore nel parsing della risposta del server')
+        setErrorDetails(parseErrorDetails)
+        throw new Error('Errore nel parsing della risposta')
+      }
 
       // Normalizza la risposta Parcels API in un formato comune
       // La struttura può variare, quindi proviamo diversi formati comuni
@@ -105,14 +140,19 @@ export default function App() {
     } catch (e) {
       console.error('Errore nel fetch tracking:', e)
       
-      // Se non abbiamo già impostato errorDetails, crealo ora
+      // Se non abbiamo già impostato errorDetails nel blocco try, crealo ora
+      // Questo è un fallback per errori non gestiti
       if (!errorDetails) {
-        setError(e.message || String(e))
-        setErrorDetails({
+        const fallbackDetails = {
           message: e.message || String(e),
           type: e.name || 'Error',
-          stack: process.env.NODE_ENV === 'development' ? e.stack : undefined
-        })
+          details: 'Errore sconosciuto durante la richiesta',
+          url: typeof window !== 'undefined' && window.location.hostname === 'localhost'
+            ? `http://localhost:3000/parcels?tracking=${encodeURIComponent(trackingCode)}`
+            : `/api/parcels-proxy?tracking=${encodeURIComponent(trackingCode)}`
+        }
+        setError(e.message || String(e))
+        setErrorDetails(fallbackDetails)
       }
       
       setEvents([])
@@ -153,27 +193,43 @@ export default function App() {
               <strong>❌ Errore</strong>
             </div>
             <div className="error-message">{error}</div>
-            {errorDetails && (
+            {errorDetails ? (
               <div className="error-details">
                 {errorDetails.status && (
                   <div className="error-detail-item">
                     <strong>Status Code:</strong> {errorDetails.status} {errorDetails.statusText && `(${errorDetails.statusText})`}
                   </div>
                 )}
-                {errorDetails.details && typeof errorDetails.details === 'string' && (
+                {errorDetails.type && (
+                  <div className="error-detail-item">
+                    <strong>Tipo Errore:</strong> {errorDetails.type}
+                  </div>
+                )}
+                {errorDetails.details && typeof errorDetails.details === 'string' && errorDetails.details.trim() && (
                   <div className="error-detail-item">
                     <strong>Dettagli:</strong> {errorDetails.details}
                   </div>
                 )}
-                {errorDetails.details && typeof errorDetails.details === 'object' && (
+                {errorDetails.details && typeof errorDetails.details === 'object' && Object.keys(errorDetails.details).length > 0 && (
                   <div className="error-detail-item">
                     <strong>Dettagli:</strong>
                     <pre className="error-json">{JSON.stringify(errorDetails.details, null, 2)}</pre>
                   </div>
                 )}
+                {errorDetails.originalError && (
+                  <div className="error-detail-item">
+                    <strong>Errore Originale:</strong> {errorDetails.originalError}
+                  </div>
+                )}
                 {errorDetails.url && (
                   <div className="error-detail-item">
                     <strong>URL richiesta:</strong> <code>{errorDetails.url}</code>
+                  </div>
+                )}
+                {errorDetails.fullError && (
+                  <div className="error-detail-item">
+                    <strong>Risposta Completa:</strong>
+                    <pre className="error-json">{JSON.stringify(errorDetails.fullError, null, 2)}</pre>
                   </div>
                 )}
                 {errorDetails.status === 502 && (
@@ -188,6 +244,17 @@ export default function App() {
                     <strong>💡 Suggerimento:</strong> Il token API non è configurato. Aggiungi <code>PARCELS_API_TOKEN</code> nelle variabili d'ambiente di Vercel.
                   </div>
                 )}
+                {!errorDetails.status && !errorDetails.details && !errorDetails.originalError && (
+                  <div className="error-detail-item">
+                    <strong>Informazioni:</strong> Errore generico durante la richiesta. Controlla la console del browser per maggiori dettagli.
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="error-details">
+                <div className="error-detail-item">
+                  <strong>Informazioni:</strong> Nessun dettaglio disponibile. Controlla la console del browser per maggiori informazioni.
+                </div>
               </div>
             )}
           </div>
