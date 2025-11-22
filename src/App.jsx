@@ -7,6 +7,7 @@ export default function App() {
   const [error, setError] = useState(null)
   const [errorDetails, setErrorDetails] = useState(null)
   const [orderInfo, setOrderInfo] = useState(null)
+  const [testResult, setTestResult] = useState(null)
 
   async function fetchTracking() {
     if (!trackingCode.trim()) {
@@ -196,6 +197,42 @@ export default function App() {
     }
   }
 
+  async function testProxyConfig() {
+    setLoading(true)
+    setError(null)
+    setErrorDetails(null)
+    setTestResult(null)
+
+    try {
+      const testUrl = typeof window !== 'undefined' && window.location.hostname === 'localhost'
+        ? 'http://localhost:3000/parcels?test=true'
+        : '/api/parcels-proxy?test=true'
+
+      const res = await fetch(testUrl)
+      const data = await res.json()
+
+      setTestResult(data)
+      
+      if (!data.configured) {
+        setError('Proxy non configurato correttamente')
+        setErrorDetails({
+          message: data.message,
+          type: 'ConfigurationError',
+          details: 'Il token API non è configurato su Vercel'
+        })
+      }
+    } catch (e) {
+      setError('Errore nel test della configurazione')
+      setErrorDetails({
+        message: e.message,
+        type: 'TestError',
+        details: 'Impossibile connettersi al proxy'
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
     <div className="container">
       <h1>Tracker Pacchi</h1>
@@ -212,7 +249,38 @@ export default function App() {
           <button onClick={fetchTracking} disabled={loading || !trackingCode.trim()}>
             {loading ? 'Caricamento...' : 'Cerca'}
           </button>
+          <button 
+            onClick={testProxyConfig} 
+            disabled={loading}
+            style={{ background: '#059669' }}
+            title="Testa la configurazione del proxy"
+          >
+            Test Config
+          </button>
         </div>
+
+        {testResult && (
+          <div className={`test-result ${testResult.configured ? 'success' : 'error'}`}>
+            <h3>Risultato Test Configurazione</h3>
+            <div className="test-details">
+              <p><strong>Configurato:</strong> {testResult.configured ? '✅ Sì' : '❌ No'}</p>
+              <p><strong>Token Presente:</strong> {testResult.hasToken ? '✅ Sì' : '❌ No'}</p>
+              <p><strong>Base URL:</strong> <code>{testResult.baseUrl}</code></p>
+              {testResult.apiReachable !== undefined && (
+                <>
+                  <p><strong>API Raggiungibile:</strong> {testResult.apiReachable ? '✅ Sì' : '❌ No'}</p>
+                  {testResult.apiStatus && (
+                    <p><strong>Status API:</strong> {testResult.apiStatus} {testResult.apiStatusText}</p>
+                  )}
+                  {testResult.apiError && (
+                    <p><strong>Errore API:</strong> {testResult.apiError}</p>
+                  )}
+                </>
+              )}
+              <p><strong>Messaggio:</strong> {testResult.message}</p>
+            </div>
+          </div>
+        )}
 
         {loading && <p>Caricamento…</p>}
         
