@@ -29,34 +29,70 @@ module.exports = async (req, res) => {
         message: apiKey ? 'Proxy is configured correctly' : 'PARCELS_API_TOKEN is missing',
         nodeVersion: process.version,
         environment: process.env.NODE_ENV || 'production',
-        apiDocumentation: 'https://parcelsapp.com/api-docs/'
+        apiDocumentation: 'https://parcelsapp.com/api-docs/',
+        correctBaseUrl: 'https://parcelsapp.com/api/v3',
+        isBaseUrlCorrect: base === 'https://parcelsapp.com/api/v3'
+      }
+      
+      // Avviso se l'URL base non è corretto
+      if (!testResult.isBaseUrlCorrect) {
+        testResult.warning = `URL base non corretto! Dovrebbe essere 'https://parcelsapp.com/api/v3' ma è '${base}'. Aggiorna PARCELS_API_BASE su Vercel o rimuovilo per usare il default.`
       }
       
       // Try to test account endpoint
       if (apiKey) {
         try {
           const accountUrl = `${base}/account?apiKey=${encodeURIComponent(apiKey)}`
+          console.log(`[Test] Testing account endpoint: ${accountUrl}`)
+          
           const accountResponse = await fetch(accountUrl, {
             method: 'GET',
             headers: { 'Accept': 'application/json' },
-            signal: AbortSignal.timeout(5000)
+            signal: AbortSignal.timeout(10000) // 10 second timeout
           })
           
+          const responseText = await accountResponse.text()
+          console.log(`[Test] Account response status: ${accountResponse.status}`)
+          console.log(`[Test] Account response: ${responseText.substring(0, 200)}`)
+          
           if (accountResponse.ok) {
-            const accountData = await accountResponse.json()
-            testResult.apiReachable = true
-            testResult.apiStatus = accountResponse.status
-            testResult.accountInfo = accountData
+            try {
+              const accountData = JSON.parse(responseText)
+              testResult.apiReachable = true
+              testResult.apiStatus = accountResponse.status
+              testResult.accountInfo = accountData
+            } catch (parseErr) {
+              testResult.apiReachable = true
+              testResult.apiStatus = accountResponse.status
+              testResult.apiStatusText = accountResponse.statusText
+              testResult.rawResponse = responseText.substring(0, 500)
+            }
           } else {
-            testResult.apiReachable = true
+            testResult.apiReachable = true // API è raggiungibile anche se errore
             testResult.apiStatus = accountResponse.status
             testResult.apiStatusText = accountResponse.statusText
+            testResult.rawResponse = responseText.substring(0, 500)
           }
         } catch (testErr) {
+          console.error(`[Test] Error testing account endpoint:`, testErr)
           testResult.apiReachable = false
           testResult.apiError = testErr.message
           testResult.apiErrorCode = testErr.code
           testResult.apiErrorName = testErr.name
+          testResult.errorStack = testErr.stack?.substring(0, 500)
+          
+          // Prova anche a testare se l'URL base è raggiungibile
+          try {
+            const baseTest = await fetch(base, {
+              method: 'GET',
+              signal: AbortSignal.timeout(5000)
+            })
+            testResult.baseUrlReachable = true
+            testResult.baseUrlStatus = baseTest.status
+          } catch (baseErr) {
+            testResult.baseUrlReachable = false
+            testResult.baseUrlError = baseErr.message
+          }
         }
       }
       
