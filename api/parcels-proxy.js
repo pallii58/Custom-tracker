@@ -16,7 +16,14 @@ module.exports = async (req, res) => {
 
   try {
     const apiKey = process.env.PARCELS_API_TOKEN
-    const base = process.env.PARCELS_API_BASE || 'https://parcelsapp.com/api/v3'
+    // Forza l'URL corretto anche se è configurato quello vecchio su Vercel
+    let base = process.env.PARCELS_API_BASE || 'https://parcelsapp.com/api/v3'
+    
+    // Se l'URL base è quello vecchio, usa quello corretto
+    if (base === 'https://api.parcelsapp.com' || base.includes('api.parcelsapp.com')) {
+      console.warn(`[Parcels Proxy] URL base errato rilevato: ${base}. Usando URL corretto.`)
+      base = 'https://parcelsapp.com/api/v3'
+    }
     
     // Test endpoint - return detailed configuration status
     if (req.query.test === 'true') {
