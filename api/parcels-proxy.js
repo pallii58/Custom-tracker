@@ -22,14 +22,31 @@ module.exports = async (req, res) => {
     const token = process.env.PARCELS_API_TOKEN
     const base = process.env.PARCELS_API_BASE || 'https://api.parcelsapp.com'
     
+    // Test endpoint - return configuration status
+    if (req.query.test === 'true') {
+      return res.status(200).json({
+        configured: !!token,
+        baseUrl: base,
+        hasToken: !!token,
+        message: token ? 'Proxy is configured correctly' : 'PARCELS_API_TOKEN is missing'
+      })
+    }
+    
     if (!token) {
       console.error('PARCELS_API_TOKEN not set in environment variables')
-      return res.status(500).json({ error: 'PARCELS_API_TOKEN not configured. Please set it in Vercel environment variables.' })
+      return res.status(500).json({ 
+        error: 'PARCELS_API_TOKEN not configured',
+        message: 'Please set PARCELS_API_TOKEN in Vercel environment variables',
+        hint: 'Go to Vercel Dashboard → Project Settings → Environment Variables'
+      })
     }
 
     const tracking = req.query.tracking
     if (!tracking) {
-      return res.status(400).json({ error: 'tracking query parameter required' })
+      return res.status(400).json({ 
+        error: 'tracking query parameter required',
+        usage: 'Use ?tracking=YOUR_TRACKING_CODE'
+      })
     }
 
     // Construct the Parcels API URL
@@ -61,14 +78,35 @@ module.exports = async (req, res) => {
         })
         
         proxyRes.on('end', () => {
+          const statusCode = proxyRes.statusCode || 200
+          
+          // Handle different HTTP status codes
+          if (statusCode >= 400) {
+            console.error(`Parcels API returned error ${statusCode}:`, body.substring(0, 500))
+            try {
+              const errorData = JSON.parse(body)
+              return res.status(statusCode).json({
+                error: 'Parcels API error',
+                status: statusCode,
+                details: errorData
+              })
+            } catch (e) {
+              return res.status(statusCode).json({
+                error: 'Parcels API error',
+                status: statusCode,
+                details: body.substring(0, 500)
+              })
+            }
+          }
+          
           try {
             // Try to parse as JSON
             const jsonData = JSON.parse(body)
-            res.status(proxyRes.statusCode || 200).json(jsonData)
+            res.status(statusCode).json(jsonData)
             resolve()
           } catch (parseError) {
             // If not JSON, return as text
-            res.status(proxyRes.statusCode || 200).send(body)
+            res.status(statusCode).send(body)
             resolve()
           }
         })
