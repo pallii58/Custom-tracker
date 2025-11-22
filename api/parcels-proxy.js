@@ -17,13 +17,9 @@ module.exports = async (req, res) => {
 
   try {
     const token = process.env.PARCELS_API_TOKEN
-    // URL base dell'API di tracking
-    // Esempi di servizi comuni:
-    // - AfterShip: https://api.aftership.com/v4
-    // - TrackingMore: https://api.trackingmore.com/v2
-    // - Ship24: https://api.ship24.com/public/v1
-    // Configura PARCELS_API_BASE su Vercel con l'URL corretto del tuo servizio
-    const base = process.env.PARCELS_API_BASE || 'https://api.parcelsapp.com'
+    // ParcelsApp API - Documentazione: https://parcelsapp.com/api-docs/
+    // URL base dell'API ParcelsApp
+    const base = process.env.PARCELS_API_BASE || 'https://parcelsapp.com/api'
     
     // Test endpoint - return detailed configuration status
     if (req.query.test === 'true') {
@@ -40,13 +36,16 @@ module.exports = async (req, res) => {
       
       // Try to make a test request if token is available
       if (token) {
-        // Prova diversi endpoint possibili
+        // Prova diversi endpoint possibili per ParcelsApp API
+        // Verifica la documentazione su https://parcelsapp.com/api-docs/ per il formato corretto
         const testEndpoints = [
-          `${base}/v1/trackings/test123`,
-          `${base}/api/v1/trackings/test123`,
           `${base}/trackings/test123`,
+          `${base}/v1/trackings/test123`,
           `${base}/tracking/test123`,
-          `${base}/v1/tracking/test123`
+          `${base}/v1/tracking/test123`,
+          `${base}/api/trackings/test123`,
+          `https://parcelsapp.com/api/trackings/test123`,
+          `https://parcelsapp.com/api/v1/trackings/test123`
         ]
         
         testResult.testedEndpoints = []
@@ -137,19 +136,16 @@ module.exports = async (req, res) => {
       })
     }
 
-    // Construct the API URL
-    // Try multiple possible endpoints (diversi servizi usano formati diversi)
-    // AfterShip: /v4/trackings/{tracking_number}
-    // TrackingMore: /trackings/get
-    // Ship24: /trackers/{trackingNumber}
+    // Construct the ParcelsApp API URL
+    // Documentazione: https://parcelsapp.com/api-docs/
+    // Prova diversi formati di endpoint possibili
     const possibleEndpoints = [
-      `${base}/v1/trackings/${encodeURIComponent(tracking)}`,
-      `${base}/v4/trackings/${encodeURIComponent(tracking)}`,
-      `${base}/v2/trackings/${encodeURIComponent(tracking)}`,
-      `${base}/api/v1/trackings/${encodeURIComponent(tracking)}`,
       `${base}/trackings/${encodeURIComponent(tracking)}`,
+      `${base}/v1/trackings/${encodeURIComponent(tracking)}`,
       `${base}/tracking/${encodeURIComponent(tracking)}`,
-      `${base}/trackers/${encodeURIComponent(tracking)}`
+      `${base}/v1/tracking/${encodeURIComponent(tracking)}`,
+      `https://parcelsapp.com/api/trackings/${encodeURIComponent(tracking)}`,
+      `https://parcelsapp.com/api/v1/trackings/${encodeURIComponent(tracking)}`
     ]
 
     console.log(`[Parcels Proxy] Request for tracking: ${tracking}`)
