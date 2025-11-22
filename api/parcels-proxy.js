@@ -1,9 +1,6 @@
 // Vercel Serverless Function proxy for Parcels API
 // This file should be in /api/parcels-proxy.js for Vercel to recognize it as a serverless function
 
-const https = require('https')
-const { URL } = require('url')
-
 module.exports = async (req, res) => {
   // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -22,14 +19,41 @@ module.exports = async (req, res) => {
     const token = process.env.PARCELS_API_TOKEN
     const base = process.env.PARCELS_API_BASE || 'https://api.parcelsapp.com'
     
-    // Test endpoint - return configuration status
+    // Test endpoint - return detailed configuration status
     if (req.query.test === 'true') {
-      return res.status(200).json({
+      const testResult = {
         configured: !!token,
         baseUrl: base,
         hasToken: !!token,
-        message: token ? 'Proxy is configured correctly' : 'PARCELS_API_TOKEN is missing'
-      })
+        tokenLength: token ? token.length : 0,
+        tokenPrefix: token ? token.substring(0, 10) + '...' : 'N/A',
+        message: token ? 'Proxy is configured correctly' : 'PARCELS_API_TOKEN is missing',
+        nodeVersion: process.version,
+        environment: process.env.NODE_ENV || 'production'
+      }
+      
+      // Try to make a test request if token is available
+      if (token) {
+        try {
+          const testUrl = `${base}/v1/trackings/test123`
+          const testResponse = await fetch(testUrl, {
+            method: 'GET',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Accept': 'application/json'
+            },
+            signal: AbortSignal.timeout(5000) // 5 second timeout
+          })
+          testResult.apiReachable = true
+          testResult.apiStatus = testResponse.status
+          testResult.apiStatusText = testResponse.statusText
+        } catch (testErr) {
+          testResult.apiReachable = false
+          testResult.apiError = testErr.message
+        }
+      }
+      
+      return res.status(200).json(testResult)
     }
     
     if (!token) {
@@ -37,7 +61,10 @@ module.exports = async (req, res) => {
       return res.status(500).json({ 
         error: 'PARCELS_API_TOKEN not configured',
         message: 'Please set PARCELS_API_TOKEN in Vercel environment variables',
-        hint: 'Go to Vercel Dashboard → Project Settings → Environment Variables'
+        hint: 'Go to Vercel Dashboard → Project Settings → Environment Variables',
+        debug: {
+          envKeys: Object.keys(process.env).filter(k => k.includes('PARCELS') || k.includes('API'))
+        }
       })
     }
 
@@ -50,92 +77,96 @@ module.exports = async (req, res) => {
     }
 
     // Construct the Parcels API URL
-    // Adjust the endpoint path based on the actual Parcels API documentation
-    const apiUrl = `${base}/v1/trackings/${encodeURIComponent(tracking)}`
-    const urlObj = new URL(apiUrl)
+    // Try multiple possible endpoints
+    const possibleEndpoints = [
+      `${base}/v1/trackings/${encodeURIComponent(tracking)}`,
+      `${base}/api/v1/trackings/${encodeURIComponent(tracking)}`,
+      `${base}/trackings/${encodeURIComponent(tracking)}`,
+      `${base}/tracking/${encodeURIComponent(tracking)}`
+    ]
 
-    console.log(`Proxying request to: ${apiUrl}`)
+    console.log(`[Parcels Proxy] Request for tracking: ${tracking}`)
+    console.log(`[Parcels Proxy] Base URL: ${base}`)
+    console.log(`[Parcels Proxy] Token present: ${!!token}`)
 
-    // Use https.request for maximum compatibility
-    return new Promise((resolve, reject) => {
-      const options = {
-        hostname: urlObj.hostname,
-        port: urlObj.port || 443,
-        path: urlObj.pathname + urlObj.search,
+    // Try the first endpoint (most common)
+    const apiUrl = possibleEndpoints[0]
+    console.log(`[Parcels Proxy] Attempting: ${apiUrl}`)
+
+    try {
+      const response = await fetch(apiUrl, {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${token}`,
           'Accept': 'application/json',
+          'Content-Type': 'application/json',
           'User-Agent': 'Parcels-Proxy/1.0'
+        },
+        signal: AbortSignal.timeout(30000) // 30 second timeout
+      })
+
+      const responseText = await response.text()
+      console.log(`[Parcels Proxy] Response status: ${response.status}`)
+      console.log(`[Parcels Proxy] Response length: ${responseText.length}`)
+
+      if (!response.ok) {
+        let errorData
+        try {
+          errorData = JSON.parse(responseText)
+        } catch (e) {
+          errorData = { raw: responseText.substring(0, 500) }
         }
+
+        return res.status(response.status).json({
+          error: 'Parcels API error',
+          status: response.status,
+          statusText: response.statusText,
+          details: errorData,
+          url: apiUrl,
+          headers: Object.fromEntries(response.headers.entries())
+        })
       }
 
-      const proxyReq = https.request(options, (proxyRes) => {
-        let body = ''
-        
-        proxyRes.on('data', (chunk) => {
-          body += chunk
-        })
-        
-        proxyRes.on('end', () => {
-          const statusCode = proxyRes.statusCode || 200
-          
-          // Handle different HTTP status codes
-          if (statusCode >= 400) {
-            console.error(`Parcels API returned error ${statusCode}:`, body.substring(0, 500))
-            try {
-              const errorData = JSON.parse(body)
-              return res.status(statusCode).json({
-                error: 'Parcels API error',
-                status: statusCode,
-                details: errorData
-              })
-            } catch (e) {
-              return res.status(statusCode).json({
-                error: 'Parcels API error',
-                status: statusCode,
-                details: body.substring(0, 500)
-              })
-            }
-          }
-          
-          try {
-            // Try to parse as JSON
-            const jsonData = JSON.parse(body)
-            res.status(statusCode).json(jsonData)
-            resolve()
-          } catch (parseError) {
-            // If not JSON, return as text
-            res.status(statusCode).send(body)
-            resolve()
-          }
-        })
-      })
+      // Try to parse as JSON
+      try {
+        const jsonData = JSON.parse(responseText)
+        return res.status(200).json(jsonData)
+      } catch (parseError) {
+        // If not JSON, return as text
+        return res.status(200).send(responseText)
+      }
 
-      proxyReq.on('error', (err) => {
-        console.error('Proxy request error:', err)
-        res.status(502).json({ 
-          error: 'proxy error', 
-          details: err.message,
-          hint: 'Check that PARCELS_API_TOKEN and PARCELS_API_BASE are correctly set in Vercel environment variables'
+    } catch (fetchError) {
+      console.error('[Parcels Proxy] Fetch error:', fetchError)
+      
+      // If first endpoint fails, try others
+      if (fetchError.name === 'AbortError' || fetchError.code === 'ENOTFOUND' || fetchError.code === 'ECONNREFUSED') {
+        return res.status(502).json({
+          error: 'proxy error',
+          details: fetchError.message,
+          code: fetchError.code,
+          url: apiUrl,
+          hint: 'The API endpoint might be incorrect or unreachable. Check PARCELS_API_BASE environment variable.',
+          triedUrl: apiUrl
         })
-        resolve()
-      })
+      }
 
-      proxyReq.setTimeout(30000, () => {
-        proxyReq.destroy()
-        res.status(504).json({ error: 'Request timeout' })
-        resolve()
+      return res.status(502).json({
+        error: 'proxy error',
+        details: fetchError.message,
+        code: fetchError.code,
+        name: fetchError.name,
+        url: apiUrl,
+        hint: 'Check that PARCELS_API_TOKEN and PARCELS_API_BASE are correctly set in Vercel environment variables'
       })
-
-      proxyReq.end()
-    })
+    }
 
   } catch (error) {
-    console.error('Proxy error:', error)
+    console.error('[Parcels Proxy] Unexpected error:', error)
     return res.status(500).json({ 
       error: 'proxy error', 
       details: error.message,
+      name: error.name,
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     })
   }
