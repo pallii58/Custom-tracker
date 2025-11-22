@@ -38,4 +38,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .test-result h3 { margin-top: 0; margin-bottom: 12px; }
 .test-details p { margin: 8px 0; }
 .test-details code { background: rgba(0,0,0,0.1); padding: 2px 6px; border-radius: 3px; font-size: 13px; }
+.test-endpoints-list { list-style: none; padding-left: 0; margin: 8px 0; }
+.test-endpoints-list li { margin: 4px 0; padding: 4px 8px; background: rgba(0,0,0,0.05); border-radius: 4px; font-size: 12px; }
+.test-endpoints-list code { font-size: 11px; }
 footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid #e5e7eb; text-align: center; }

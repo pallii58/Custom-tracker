@@ -34,22 +34,77 @@ module.exports = async (req, res) => {
       
       // Try to make a test request if token is available
       if (token) {
-        try {
-          const testUrl = `${base}/v1/trackings/test123`
-          const testResponse = await fetch(testUrl, {
-            method: 'GET',
-            headers: {
-              'Authorization': `Bearer ${token}`,
-              'Accept': 'application/json'
-            },
-            signal: AbortSignal.timeout(5000) // 5 second timeout
-          })
-          testResult.apiReachable = true
-          testResult.apiStatus = testResponse.status
-          testResult.apiStatusText = testResponse.statusText
-        } catch (testErr) {
-          testResult.apiReachable = false
-          testResult.apiError = testErr.message
+        // Prova diversi endpoint possibili
+        const testEndpoints = [
+          `${base}/v1/trackings/test123`,
+          `${base}/api/v1/trackings/test123`,
+          `${base}/trackings/test123`,
+          `${base}/tracking/test123`,
+          `${base}/v1/tracking/test123`
+        ]
+        
+        testResult.testedEndpoints = []
+        
+        for (const testUrl of testEndpoints) {
+          try {
+            console.log(`[Test] Trying endpoint: ${testUrl}`)
+            const testResponse = await fetch(testUrl, {
+              method: 'GET',
+              headers: {
+                'Authorization': `Bearer ${token}`,
+                'Accept': 'application/json'
+              },
+              signal: AbortSignal.timeout(5000) // 5 second timeout
+            })
+            
+            testResult.testedEndpoints.push({
+              url: testUrl,
+              status: testResponse.status,
+              statusText: testResponse.statusText,
+              success: testResponse.ok || testResponse.status < 500
+            })
+            
+            // Se otteniamo una risposta (anche 404), significa che l'API è raggiungibile
+            if (testResponse.status < 500) {
+              testResult.apiReachable = true
+              testResult.apiStatus = testResponse.status
+              testResult.apiStatusText = testResponse.statusText
+              testResult.workingEndpoint = testUrl
+              break
+            }
+          } catch (testErr) {
+            testResult.testedEndpoints.push({
+              url: testUrl,
+              error: testErr.message,
+              code: testErr.code,
+              name: testErr.name
+            })
+            
+            // Se è un errore di DNS o connessione, salva i dettagli
+            if (testErr.code === 'ENOTFOUND' || testErr.code === 'ECONNREFUSED' || testErr.name === 'TypeError') {
+              testResult.apiReachable = false
+              testResult.apiError = testErr.message
+              testResult.apiErrorCode = testErr.code
+              testResult.apiErrorName = testErr.name
+            }
+          }
+        }
+        
+        // Se nessun endpoint ha funzionato, prova a fare un ping base
+        if (!testResult.apiReachable) {
+          try {
+            // Prova a fare una richiesta base all'URL senza path
+            const baseTest = await fetch(base, {
+              method: 'GET',
+              signal: AbortSignal.timeout(3000)
+            })
+            testResult.baseUrlReachable = true
+            testResult.baseUrlStatus = baseTest.status
+          } catch (baseErr) {
+            testResult.baseUrlReachable = false
+            testResult.baseUrlError = baseErr.message
+            testResult.baseUrlErrorCode = baseErr.code
+          }
         }
       }
       
