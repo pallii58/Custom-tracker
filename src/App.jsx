@@ -8,6 +8,8 @@ export default function App() {
   const [errorDetails, setErrorDetails] = useState(null)
   const [orderInfo, setOrderInfo] = useState(null)
   const [testResult, setTestResult] = useState(null)
+  const [useDirectAPI, setUseDirectAPI] = useState(false)
+  const [apiToken, setApiToken] = useState('')
 
   async function fetchTracking() {
     if (!trackingCode.trim()) {
@@ -22,27 +24,56 @@ export default function App() {
     setOrderInfo(null)
 
     try {
-      // In production on Vercel this would be /api/parcels-proxy?tracking=...
-      // For local testing run `node server/proxy.js` and use http://localhost:3000/parcels?tracking=...
-      const proxyUrl = typeof window !== 'undefined' && window.location.hostname === 'localhost'
-        ? `http://localhost:3000/parcels?tracking=${encodeURIComponent(trackingCode)}`
-        : `/api/parcels-proxy?tracking=${encodeURIComponent(trackingCode)}`
-
       let res
-      try {
-        res = await fetch(proxyUrl)
-      } catch (fetchError) {
-        // Errore di rete (fetch fallito)
-        const networkError = {
-          message: 'Errore di connessione',
-          type: 'NetworkError',
-          details: fetchError.message || 'Impossibile connettersi al server',
-          url: proxyUrl,
-          originalError: fetchError.message
+      let apiUrl
+      
+      // Opzione per bypassare il proxy e chiamare direttamente l'API (solo per test)
+      if (useDirectAPI && apiToken) {
+        const base = 'https://api.parcelsapp.com'
+        apiUrl = `${base}/v1/trackings/${encodeURIComponent(trackingCode)}`
+        console.log('Using direct API call:', apiUrl)
+        
+        try {
+          res = await fetch(apiUrl, {
+            method: 'GET',
+            headers: {
+              'Authorization': `Bearer ${apiToken}`,
+              'Accept': 'application/json'
+            }
+          })
+        } catch (fetchError) {
+          const networkError = {
+            message: 'Errore di connessione diretta all\'API',
+            type: 'NetworkError',
+            details: fetchError.message || 'Impossibile connettersi all\'API Parcels',
+            url: apiUrl,
+            originalError: fetchError.message
+          }
+          setError('Errore di connessione all\'API Parcels')
+          setErrorDetails(networkError)
+          throw new Error('Errore di connessione')
         }
-        setError('Errore di connessione al server')
-        setErrorDetails(networkError)
-        throw new Error('Errore di connessione')
+      } else {
+        // Usa il proxy normale
+        const proxyUrl = typeof window !== 'undefined' && window.location.hostname === 'localhost'
+          ? `http://localhost:3000/parcels?tracking=${encodeURIComponent(trackingCode)}`
+          : `/api/parcels-proxy?tracking=${encodeURIComponent(trackingCode)}`
+
+        try {
+          res = await fetch(proxyUrl)
+        } catch (fetchError) {
+          // Errore di rete (fetch fallito)
+          const networkError = {
+            message: 'Errore di connessione',
+            type: 'NetworkError',
+            details: fetchError.message || 'Impossibile connettersi al server',
+            url: proxyUrl,
+            originalError: fetchError.message
+          }
+          setError('Errore di connessione al server')
+          setErrorDetails(networkError)
+          throw new Error('Errore di connessione')
+        }
       }
       
       if (!res.ok) {
@@ -265,18 +296,51 @@ export default function App() {
             <div className="test-details">
               <p><strong>Configurato:</strong> {testResult.configured ? '✅ Sì' : '❌ No'}</p>
               <p><strong>Token Presente:</strong> {testResult.hasToken ? '✅ Sì' : '❌ No'}</p>
+              {testResult.tokenLength && <p><strong>Lunghezza Token:</strong> {testResult.tokenLength} caratteri</p>}
               <p><strong>Base URL:</strong> <code>{testResult.baseUrl}</code></p>
+              
+              {testResult.baseUrlReachable !== undefined && (
+                <p><strong>Base URL Raggiungibile:</strong> {testResult.baseUrlReachable ? '✅ Sì' : '❌ No'}
+                  {testResult.baseUrlStatus && ` (Status: ${testResult.baseUrlStatus})`}
+                  {testResult.baseUrlError && ` - Errore: ${testResult.baseUrlError}`}
+                </p>
+              )}
+              
               {testResult.apiReachable !== undefined && (
                 <>
                   <p><strong>API Raggiungibile:</strong> {testResult.apiReachable ? '✅ Sì' : '❌ No'}</p>
+                  {testResult.workingEndpoint && (
+                    <p><strong>Endpoint Funzionante:</strong> <code>{testResult.workingEndpoint}</code></p>
+                  )}
                   {testResult.apiStatus && (
                     <p><strong>Status API:</strong> {testResult.apiStatus} {testResult.apiStatusText}</p>
                   )}
                   {testResult.apiError && (
-                    <p><strong>Errore API:</strong> {testResult.apiError}</p>
+                    <div>
+                      <p><strong>Errore API:</strong> {testResult.apiError}</p>
+                      {testResult.apiErrorCode && <p><strong>Codice Errore:</strong> {testResult.apiErrorCode}</p>}
+                      {testResult.apiErrorName && <p><strong>Tipo Errore:</strong> {testResult.apiErrorName}</p>}
+                    </div>
                   )}
                 </>
               )}
+              
+              {testResult.testedEndpoints && testResult.testedEndpoints.length > 0 && (
+                <div>
+                  <p><strong>Endpoint Testati:</strong></p>
+                  <ul className="test-endpoints-list">
+                    {testResult.testedEndpoints.map((ep, idx) => (
+                      <li key={idx}>
+                        <code>{ep.url}</code>
+                        {ep.status && <span> - Status: {ep.status} {ep.statusText}</span>}
+                        {ep.error && <span> - ❌ Errore: {ep.error} {ep.code && `(${ep.code})`}</span>}
+                        {ep.success && <span> - ✅ Raggiungibile</span>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              
               <p><strong>Messaggio:</strong> {testResult.message}</p>
             </div>
           </div>
