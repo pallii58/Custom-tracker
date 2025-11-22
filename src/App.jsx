@@ -334,6 +334,18 @@ export default function App() {
               <p><strong>Token Presente:</strong> {testResult.hasToken ? '✅ Sì' : '❌ No'}</p>
               {testResult.tokenLength && <p><strong>Lunghezza Token:</strong> {testResult.tokenLength} caratteri</p>}
               <p><strong>Base URL:</strong> <code>{testResult.baseUrl}</code></p>
+              {testResult.isBaseUrlCorrect !== undefined && (
+                <p><strong>URL Corretto:</strong> {testResult.isBaseUrlCorrect ? '✅ Sì' : '❌ No'}
+                  {testResult.correctBaseUrl && !testResult.isBaseUrlCorrect && (
+                    <span> (Dovrebbe essere: <code>{testResult.correctBaseUrl}</code>)</span>
+                  )}
+                </p>
+              )}
+              {testResult.warning && (
+                <div className="error-hint" style={{ marginTop: '12px' }}>
+                  <strong>⚠️ Avviso:</strong> {testResult.warning}
+                </div>
+              )}
               
               {testResult.baseUrlReachable !== undefined && (
                 <p><strong>Base URL Raggiungibile:</strong> {testResult.baseUrlReachable ? '✅ Sì' : '❌ No'}
