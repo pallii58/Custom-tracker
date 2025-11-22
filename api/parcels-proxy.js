@@ -3,6 +3,8 @@
 // API funziona in 2 fasi:
 // 1. POST /shipments/tracking per creare richiesta e ottenere UUID
 // 2. GET /shipments/tracking?uuid=<UUID>&apiKey=<KEY> per leggere risultati
+//
+// Modalità MOCK: Imposta USE_MOCK_DATA=true per usare dati di test (solo sviluppo)
 
 module.exports = async (req, res) => {
   // Enable CORS
@@ -120,6 +122,43 @@ module.exports = async (req, res) => {
       return res.status(400).json({ 
         error: 'tracking query parameter required',
         usage: 'Use ?tracking=YOUR_TRACKING_CODE&destinationCountry=COUNTRY (optional)'
+      })
+    }
+
+    // Modalità MOCK per sviluppo/test (solo se esplicitamente abilitata)
+    const useMockData = process.env.USE_MOCK_DATA === 'true' && process.env.NODE_ENV !== 'production'
+    if (useMockData) {
+      console.log('[Parcels Proxy] Using MOCK data mode')
+      return res.status(200).json({
+        done: true,
+        shipments: [{
+          trackingId: tracking,
+          carrier: { name: 'Mock Carrier', slug: 'mock' },
+          status: 'in_transit',
+          origin: 'Mock Origin',
+          destination: 'Mock Destination',
+          events: [
+            {
+              id: '1',
+              status: 'in_transit',
+              description: 'Package in transit',
+              timestamp: new Date().toISOString(),
+              location: 'Mock Location'
+            },
+            {
+              id: '2',
+              status: 'picked_up',
+              description: 'Package picked up',
+              timestamp: new Date(Date.now() - 86400000).toISOString(),
+              location: 'Origin Location'
+            }
+          ]
+        }],
+        _meta: {
+          done: true,
+          fromCache: false,
+          mock: true
+        }
       })
     }
 
