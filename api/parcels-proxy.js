@@ -157,6 +157,7 @@ module.exports = async (req, res) => {
 
       const createResponseText = await createResponse.text()
       console.log(`[Parcels Proxy] Create response status: ${createResponse.status}`)
+      console.log(`[Parcels Proxy] Create response body: ${createResponseText.substring(0, 1000)}`)
 
       if (!createResponse.ok) {
         let errorData
@@ -170,27 +171,37 @@ module.exports = async (req, res) => {
           error: 'Failed to create tracking request',
           status: createResponse.status,
           statusText: createResponse.statusText,
-          details: errorData
+          details: errorData,
+          requestPayload: trackingPayload
         })
       }
 
       let createData
       try {
         createData = JSON.parse(createResponseText)
+        console.log(`[Parcels Proxy] Parsed create data:`, JSON.stringify(createData).substring(0, 500))
       } catch (e) {
+        console.error(`[Parcels Proxy] Failed to parse response:`, e)
         return res.status(500).json({
           error: 'Invalid response from API',
-          details: createResponseText.substring(0, 500)
+          details: createResponseText.substring(0, 500),
+          parseError: e.message
         })
       }
 
-      const uuid = createData.uuid
+      // L'UUID potrebbe essere in diversi campi
+      const uuid = createData.uuid || createData.id || createData.trackingId || createData.requestId
       if (!uuid) {
+        console.error(`[Parcels Proxy] No UUID found in response. Response keys:`, Object.keys(createData))
         return res.status(500).json({
           error: 'No UUID received from tracking request',
-          response: createData
+          response: createData,
+          responseKeys: Object.keys(createData),
+          hint: 'La risposta dell\'API potrebbe avere una struttura diversa da quella attesa. Controlla i log di Vercel per vedere la risposta completa.'
         })
       }
+      
+      console.log(`[Parcels Proxy] UUID received: ${uuid}`)
 
       console.log(`[Parcels Proxy] Tracking request created, UUID: ${uuid}`)
 
