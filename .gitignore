@@ -3,4 +3,6 @@ dist
 .env
 .vscode
 server/secrets.js
-.vscode
+# macOS metadata files
+._*
+.DS_Store
