@@ -1,10 +1,91 @@
-// Vercel Serverless Function proxy for ParcelsApp API
-// Documentazione: https://parcelsapp.com/api-docs/
-// API funziona in 2 fasi:
-// 1. POST /shipments/tracking per creare richiesta e ottenere UUID
-// 2. GET /shipments/tracking?uuid=<UUID>&apiKey=<KEY> per leggere risultati
+// Vercel Serverless Function proxy for Package Tracking APIs
+// Supporta multiple API providers con fallback automatico:
+// 1. ParcelsApp API (https://parcelsapp.com/api-docs/)
+// 2. 17Track API (https://www.17track.net/en/api) - Piano gratuito generoso
+//
+// Configurazione:
+// - PARCELS_API_TOKEN: API key per ParcelsApp
+// - TRACK17_API_KEY: API key per 17Track (opzionale, usato come fallback)
+// - TRACKING_PROVIDER: 'parcelsapp' (default) o '17track' o 'auto' (fallback automatico)
 //
 // Modalità MOCK: Imposta USE_MOCK_DATA=true per usare dati di test (solo sviluppo)
+
+// Helper function per 17Track API
+async function trackWith17Track(trackingNumber, apiKey) {
+  const base = 'https://api.17track.net/track/v2.2'
+  
+  // 17Track API usa POST con array di tracking numbers
+  const response = await fetch(`${base}/register`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      '17token': apiKey
+    },
+    body: JSON.stringify({
+      number: trackingNumber
+    }),
+    signal: AbortSignal.timeout(30000)
+  })
+  
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(`17Track API error: ${response.status} - ${errorText}`)
+  }
+  
+  const data = await response.json()
+  
+  // Poi recupera i dati
+  const getResponse = await fetch(`${base}/gettrackinfo`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      '17token': apiKey
+    },
+    body: JSON.stringify({
+      number: trackingNumber
+    }),
+    signal: AbortSignal.timeout(30000)
+  })
+  
+  if (!getResponse.ok) {
+    const errorText = await getResponse.text()
+    throw new Error(`17Track gettrackinfo error: ${getResponse.status} - ${errorText}`)
+  }
+  
+  const trackData = await getResponse.json()
+  
+  // Normalizza la risposta 17Track al formato ParcelsApp
+  if (trackData.data && trackData.data.length > 0) {
+    const track = trackData.data[0]
+    return {
+      done: true,
+      shipments: [{
+        trackingId: track.number || trackingNumber,
+        carrier: {
+          name: track.carrier || 'Unknown',
+          slug: track.carrier_code || 'unknown'
+        },
+        status: track.tag || 'unknown',
+        origin: track.origin || '',
+        destination: track.destination || '',
+        events: (track.track || []).map((event, idx) => ({
+          id: idx.toString(),
+          status: event.tag || 'unknown',
+          description: event.checkpoint_status || event.details || '',
+          timestamp: event.tracked_time || event.datetime || new Date().toISOString(),
+          location: event.location || ''
+        }))
+      }],
+      _meta: {
+        done: true,
+        fromCache: false,
+        provider: '17track'
+      }
+    }
+  }
+  
+  throw new Error('No tracking data from 17Track')
+}
 
 module.exports = async (req, res) => {
   // Enable CORS
@@ -17,102 +98,70 @@ module.exports = async (req, res) => {
   }
 
   try {
-    const apiKey = process.env.PARCELS_API_TOKEN
+    const parcelsApiKey = process.env.PARCELS_API_TOKEN
+    const track17ApiKey = process.env.TRACK17_API_KEY
+    const provider = process.env.TRACKING_PROVIDER || 'auto' // 'parcelsapp', '17track', o 'auto'
+    
     // Forza l'URL corretto anche se è configurato quello vecchio su Vercel
-    let base = process.env.PARCELS_API_BASE || 'https://parcelsapp.com/api/v3'
+    let parcelsBase = process.env.PARCELS_API_BASE || 'https://parcelsapp.com/api/v3'
     
     // Se l'URL base è quello vecchio, usa quello corretto
-    if (base === 'https://api.parcelsapp.com' || base.includes('api.parcelsapp.com')) {
-      console.warn(`[Parcels Proxy] URL base errato rilevato: ${base}. Usando URL corretto.`)
-      base = 'https://parcelsapp.com/api/v3'
+    if (parcelsBase === 'https://api.parcelsapp.com' || parcelsBase.includes('api.parcelsapp.com')) {
+      console.warn(`[Tracking Proxy] URL base errato rilevato: ${parcelsBase}. Usando URL corretto.`)
+      parcelsBase = 'https://parcelsapp.com/api/v3'
     }
     
     // Test endpoint - return detailed configuration status
     if (req.query.test === 'true') {
       const testResult = {
-        configured: !!apiKey,
-        baseUrl: base,
-        hasToken: !!apiKey,
-        tokenLength: apiKey ? apiKey.length : 0,
-        tokenPrefix: apiKey ? apiKey.substring(0, 10) + '...' : 'N/A',
-        message: apiKey ? 'Proxy is configured correctly' : 'PARCELS_API_TOKEN is missing',
+        configured: !!(parcelsApiKey || track17ApiKey),
+        provider: provider,
+        parcelsApp: {
+          configured: !!parcelsApiKey,
+          hasToken: !!parcelsApiKey,
+          tokenLength: parcelsApiKey ? parcelsApiKey.length : 0,
+          baseUrl: parcelsBase
+        },
+        track17: {
+          configured: !!track17ApiKey,
+          hasToken: !!track17ApiKey,
+          tokenLength: track17ApiKey ? track17ApiKey.length : 0,
+          baseUrl: 'https://api.17track.net/track/v2.2'
+        },
+        message: (parcelsApiKey || track17ApiKey) ? 'Proxy is configured correctly' : 'No API keys configured',
         nodeVersion: process.version,
         environment: process.env.NODE_ENV || 'production',
-        apiDocumentation: 'https://parcelsapp.com/api-docs/',
-        correctBaseUrl: 'https://parcelsapp.com/api/v3',
-        isBaseUrlCorrect: base === 'https://parcelsapp.com/api/v3'
+        apiDocumentation: {
+          parcelsapp: 'https://parcelsapp.com/api-docs/',
+          track17: 'https://www.17track.net/en/api'
+        }
       }
       
-      // Avviso se l'URL base non è corretto
-      if (!testResult.isBaseUrlCorrect) {
-        testResult.warning = `URL base non corretto! Dovrebbe essere 'https://parcelsapp.com/api/v3' ma è '${base}'. Aggiorna PARCELS_API_BASE su Vercel o rimuovilo per usare il default.`
-      }
-      
-      // Try to test account endpoint
-      if (apiKey) {
+      // Test ParcelsApp
+      if (parcelsApiKey) {
         try {
-          const accountUrl = `${base}/account?apiKey=${encodeURIComponent(apiKey)}`
-          console.log(`[Test] Testing account endpoint: ${accountUrl}`)
-          
+          const accountUrl = `${parcelsBase}/account?apiKey=${encodeURIComponent(parcelsApiKey)}`
           const accountResponse = await fetch(accountUrl, {
             method: 'GET',
             headers: { 'Accept': 'application/json' },
-            signal: AbortSignal.timeout(10000) // 10 second timeout
+            signal: AbortSignal.timeout(10000)
           })
-          
-          const responseText = await accountResponse.text()
-          console.log(`[Test] Account response status: ${accountResponse.status}`)
-          console.log(`[Test] Account response: ${responseText.substring(0, 200)}`)
-          
-          if (accountResponse.ok) {
-            try {
-              const accountData = JSON.parse(responseText)
-              testResult.apiReachable = true
-              testResult.apiStatus = accountResponse.status
-              testResult.accountInfo = accountData
-            } catch (parseErr) {
-              testResult.apiReachable = true
-              testResult.apiStatus = accountResponse.status
-              testResult.apiStatusText = accountResponse.statusText
-              testResult.rawResponse = responseText.substring(0, 500)
-            }
-          } else {
-            testResult.apiReachable = true // API è raggiungibile anche se errore
-            testResult.apiStatus = accountResponse.status
-            testResult.apiStatusText = accountResponse.statusText
-            testResult.rawResponse = responseText.substring(0, 500)
-          }
-        } catch (testErr) {
-          console.error(`[Test] Error testing account endpoint:`, testErr)
-          testResult.apiReachable = false
-          testResult.apiError = testErr.message
-          testResult.apiErrorCode = testErr.code
-          testResult.apiErrorName = testErr.name
-          testResult.errorStack = testErr.stack?.substring(0, 500)
-          
-          // Prova anche a testare se l'URL base è raggiungibile
-          try {
-            const baseTest = await fetch(base, {
-              method: 'GET',
-              signal: AbortSignal.timeout(5000)
-            })
-            testResult.baseUrlReachable = true
-            testResult.baseUrlStatus = baseTest.status
-          } catch (baseErr) {
-            testResult.baseUrlReachable = false
-            testResult.baseUrlError = baseErr.message
-          }
+          testResult.parcelsApp.apiReachable = accountResponse.ok || accountResponse.status < 500
+          testResult.parcelsApp.apiStatus = accountResponse.status
+        } catch (e) {
+          testResult.parcelsApp.apiReachable = false
+          testResult.parcelsApp.apiError = e.message
         }
       }
       
       return res.status(200).json(testResult)
     }
     
-    if (!apiKey) {
-      console.error('PARCELS_API_TOKEN not set in environment variables')
+    if (!parcelsApiKey && !track17ApiKey) {
+      console.error('No API keys configured')
       return res.status(500).json({ 
-        error: 'PARCELS_API_TOKEN not configured',
-        message: 'Please set PARCELS_API_TOKEN in Vercel environment variables',
+        error: 'No API keys configured',
+        message: 'Please set PARCELS_API_TOKEN or TRACK17_API_KEY in Vercel environment variables',
         hint: 'Go to Vercel Dashboard → Project Settings → Environment Variables'
       })
     }
@@ -128,7 +177,7 @@ module.exports = async (req, res) => {
     // Modalità MOCK per sviluppo/test (solo se esplicitamente abilitata)
     const useMockData = process.env.USE_MOCK_DATA === 'true' && process.env.NODE_ENV !== 'production'
     if (useMockData) {
-      console.log('[Parcels Proxy] Using MOCK data mode')
+      console.log('[Tracking Proxy] Using MOCK data mode')
       return res.status(200).json({
         done: true,
         shipments: [{
@@ -144,220 +193,176 @@ module.exports = async (req, res) => {
               description: 'Package in transit',
               timestamp: new Date().toISOString(),
               location: 'Mock Location'
-            },
-            {
-              id: '2',
-              status: 'picked_up',
-              description: 'Package picked up',
-              timestamp: new Date(Date.now() - 86400000).toISOString(),
-              location: 'Origin Location'
             }
           ]
         }],
-        _meta: {
-          done: true,
-          fromCache: false,
-          mock: true
-        }
+        _meta: { done: true, fromCache: false, mock: true }
       })
     }
 
     const destinationCountry = req.query.destinationCountry || req.query.country || ''
     const language = req.query.language || 'en'
 
-    console.log(`[Parcels Proxy] Request for tracking: ${tracking}`)
-    console.log(`[Parcels Proxy] Base URL: ${base}`)
-    console.log(`[Parcels Proxy] API Key present: ${!!apiKey}`)
+    console.log(`[Tracking Proxy] Request for tracking: ${tracking}, Provider: ${provider}`)
 
-    try {
-      // Step 1: Create tracking request (POST)
-      const trackingUrl = `${base}/shipments/tracking`
-      const trackingPayload = {
-        apiKey: apiKey,
-        shipments: [
-          {
+    // Se provider è '17track' o 'auto' e ParcelsApp non è disponibile, usa 17Track
+    const use17Track = provider === '17track' || (provider === 'auto' && track17ApiKey)
+    
+    // Prova prima ParcelsApp (se configurato e provider non è solo 17track)
+    if (parcelsApiKey && provider !== '17track') {
+      try {
+        // Step 1: Create tracking request (POST)
+        const trackingUrl = `${parcelsBase}/shipments/tracking`
+        const trackingPayload = {
+          apiKey: parcelsApiKey,
+          shipments: [{
             trackingId: tracking,
             ...(destinationCountry && { destinationCountry: destinationCountry })
+          }],
+          language: language
+        }
+
+        console.log(`[Tracking Proxy] Trying ParcelsApp API...`)
+        const createResponse = await fetch(trackingUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify(trackingPayload),
+          signal: AbortSignal.timeout(30000)
+        })
+
+        const createResponseText = await createResponse.text()
+        console.log(`[Tracking Proxy] ParcelsApp response status: ${createResponse.status}`)
+
+        if (createResponse.ok) {
+          let createData
+          try {
+            createData = JSON.parse(createResponseText)
+          } catch (e) {
+            throw new Error('Invalid JSON response from ParcelsApp')
           }
-        ],
-        language: language
-      }
 
-      console.log(`[Parcels Proxy] Creating tracking request...`)
-      const createResponse = await fetch(trackingUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        body: JSON.stringify(trackingPayload),
-        signal: AbortSignal.timeout(30000)
-      })
+          // Controlla se c'è un errore nella risposta
+          if (createData.error === 'SUBSCRIPTION_LIMIT_REACHED') {
+            console.log(`[Tracking Proxy] ParcelsApp limit reached, trying 17Track fallback...`)
+            throw new Error('SUBSCRIPTION_LIMIT_REACHED')
+          }
 
-      const createResponseText = await createResponse.text()
-      console.log(`[Parcels Proxy] Create response status: ${createResponse.status}`)
-      console.log(`[Parcels Proxy] Create response body: ${createResponseText.substring(0, 1000)}`)
+          if (createData.error) {
+            // Altri errori di ParcelsApp
+            let errorMessage = createData.error
+            let hint = ''
+            
+            if (createData.error === 'INVALID_API_KEY' || createData.error === 'UNAUTHORIZED') {
+              errorMessage = 'API Key non valida'
+              hint = 'La chiave API ParcelsApp non è valida. Verifica PARCELS_API_TOKEN su Vercel.'
+            } else if (createData.error === 'INVALID_TRACKING_ID') {
+              errorMessage = 'Tracking ID non valido'
+              hint = 'Il codice di tracking inserito non è valido.'
+            }
+            
+            // Se abbiamo 17Track come fallback, provalo
+            if (use17Track && track17ApiKey) {
+              console.log(`[Tracking Proxy] ParcelsApp error, trying 17Track fallback...`)
+              throw new Error('PARCELSAPP_ERROR')
+            }
+            
+            return res.status(400).json({
+              error: errorMessage,
+              apiError: createData.error,
+              details: createData,
+              hint: hint || 'Errore dall\'API ParcelsApp.'
+            })
+          }
+          
+          // L'UUID potrebbe essere in diversi campi
+          const uuid = createData.uuid || createData.id || createData.trackingId || createData.requestId
+          if (!uuid) {
+            // Se abbiamo 17Track come fallback, provalo
+            if (use17Track && track17ApiKey) {
+              console.log(`[Tracking Proxy] No UUID from ParcelsApp, trying 17Track fallback...`)
+              throw new Error('NO_UUID')
+            }
+            
+            return res.status(500).json({
+              error: 'No UUID received from tracking request',
+              response: createData,
+              responseKeys: Object.keys(createData)
+            })
+          }
+          
+          console.log(`[Tracking Proxy] ParcelsApp UUID received: ${uuid}`)
 
-      if (!createResponse.ok) {
-        let errorData
-        try {
-          errorData = JSON.parse(createResponseText)
-        } catch (e) {
-          errorData = { raw: createResponseText.substring(0, 500) }
+          // Step 2: Get tracking results (GET)
+          const getUrl = `${parcelsBase}/shipments/tracking?uuid=${encodeURIComponent(uuid)}&apiKey=${encodeURIComponent(parcelsApiKey)}`
+          
+          const getResponse = await fetch(getUrl, {
+            method: 'GET',
+            headers: { 'Accept': 'application/json' },
+            signal: AbortSignal.timeout(30000)
+          })
+
+          const getResponseText = await getResponse.text()
+
+          if (getResponse.ok) {
+            let trackingData
+            try {
+              trackingData = JSON.parse(getResponseText)
+            } catch (e) {
+              throw new Error('Invalid JSON in tracking results')
+            }
+
+            return res.status(200).json({
+              ...trackingData,
+              uuid: uuid,
+              _meta: {
+                done: trackingData.done || false,
+                fromCache: createData.fromCache || false,
+                provider: 'parcelsapp'
+              }
+            })
+          }
         }
-
-        return res.status(createResponse.status).json({
-          error: 'Failed to create tracking request',
-          status: createResponse.status,
-          statusText: createResponse.statusText,
-          details: errorData,
-          requestPayload: trackingPayload
-        })
-      }
-
-      let createData
-      try {
-        createData = JSON.parse(createResponseText)
-        console.log(`[Parcels Proxy] Parsed create data:`, JSON.stringify(createData).substring(0, 500))
-      } catch (e) {
-        console.error(`[Parcels Proxy] Failed to parse response:`, e)
-        return res.status(500).json({
-          error: 'Invalid response from API',
-          details: createResponseText.substring(0, 500),
-          parseError: e.message
-        })
-      }
-
-      // Controlla se c'è un errore nella risposta
-      if (createData.error) {
-        console.error(`[Parcels Proxy] API returned error:`, createData.error)
-        
-        // Gestisci errori specifici dell'API
-        let errorMessage = createData.error
-        let hint = ''
-        
-        if (createData.error === 'SUBSCRIPTION_LIMIT_REACHED') {
-          errorMessage = 'Limite di richieste raggiunto'
-          hint = 'Il tuo account ParcelsApp ha raggiunto il limite di richieste del piano corrente. Verifica il tuo piano su https://parcelsapp.com o aspetta il reset del limite.'
-        } else if (createData.error === 'INVALID_API_KEY' || createData.error === 'UNAUTHORIZED') {
-          errorMessage = 'API Key non valida'
-          hint = 'La chiave API non è valida o è scaduta. Verifica PARCELS_API_TOKEN su Vercel.'
-        } else if (createData.error === 'INVALID_TRACKING_ID') {
-          errorMessage = 'Tracking ID non valido'
-          hint = 'Il codice di tracking inserito non è valido o non è riconosciuto dal sistema.'
+      } catch (parcelsError) {
+        // Se è SUBSCRIPTION_LIMIT_REACHED e abbiamo 17Track, fallback
+        if (parcelsError.message === 'SUBSCRIPTION_LIMIT_REACHED' && use17Track && track17ApiKey) {
+          console.log(`[Tracking Proxy] ParcelsApp limit reached, using 17Track fallback`)
+        } else if (parcelsError.message !== 'PARCELSAPP_ERROR' && parcelsError.message !== 'NO_UUID') {
+          // Se non è un errore che vogliamo gestire con fallback, rilancia
+          throw parcelsError
         }
-        
-        return res.status(400).json({
-          error: errorMessage,
-          apiError: createData.error,
-          details: createData,
-          hint: hint || 'Errore dall\'API ParcelsApp. Controlla i dettagli per maggiori informazioni.'
-        })
       }
-      
-      // L'UUID potrebbe essere in diversi campi
-      const uuid = createData.uuid || createData.id || createData.trackingId || createData.requestId
-      if (!uuid) {
-        console.error(`[Parcels Proxy] No UUID found in response. Response keys:`, Object.keys(createData))
-        return res.status(500).json({
-          error: 'No UUID received from tracking request',
-          response: createData,
-          responseKeys: Object.keys(createData),
-          hint: 'La risposta dell\'API potrebbe avere una struttura diversa da quella attesa. Controlla i log di Vercel per vedere la risposta completa.'
-        })
-      }
-      
-      console.log(`[Parcels Proxy] UUID received: ${uuid}`)
-
-      console.log(`[Parcels Proxy] Tracking request created, UUID: ${uuid}`)
-
-      // Step 2: Get tracking results (GET)
-      // Try to get results immediately (might be cached)
-      const getUrl = `${base}/shipments/tracking?uuid=${encodeURIComponent(uuid)}&apiKey=${encodeURIComponent(apiKey)}`
-      
-      console.log(`[Parcels Proxy] Fetching tracking results...`)
-      const getResponse = await fetch(getUrl, {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/json'
-        },
-        signal: AbortSignal.timeout(30000)
-      })
-
-      const getResponseText = await getResponse.text()
-      console.log(`[Parcels Proxy] Get response status: ${getResponse.status}`)
-
-      if (!getResponse.ok) {
-        let errorData
-        try {
-          errorData = JSON.parse(getResponseText)
-        } catch (e) {
-          errorData = { raw: getResponseText.substring(0, 500) }
-        }
-
-        return res.status(getResponse.status).json({
-          error: 'Failed to get tracking results',
-          status: getResponse.status,
-          statusText: getResponse.statusText,
-          details: errorData,
-          uuid: uuid
-        })
-      }
-
-      let trackingData
-      try {
-        trackingData = JSON.parse(getResponseText)
-      } catch (e) {
-        return res.status(500).json({
-          error: 'Invalid response from API',
-          details: getResponseText.substring(0, 500),
-          uuid: uuid
-        })
-      }
-
-      // Return tracking data
-      // Note: If done=false, the client might need to poll again
-      return res.status(200).json({
-        ...trackingData,
-        uuid: uuid,
-        _meta: {
-          done: trackingData.done || false,
-          fromCache: createData.fromCache || false
-        }
-      })
-
-    } catch (fetchError) {
-      console.error('[Parcels Proxy] Fetch error:', fetchError)
-      
-      // Fornisci dettagli più specifici in base al tipo di errore
-      let errorDetails = {
-        error: 'proxy error',
-        message: fetchError.message,
-        name: fetchError.name,
-        code: fetchError.code
-      }
-      
-      if (fetchError.name === 'AbortError' || fetchError.name === 'TimeoutError') {
-        errorDetails.hint = 'La richiesta è scaduta. L\'API potrebbe essere lenta o non raggiungibile.'
-        errorDetails.type = 'TimeoutError'
-      } else if (fetchError.code === 'ENOTFOUND' || fetchError.code === 'ECONNREFUSED') {
-        errorDetails.hint = 'Impossibile connettersi all\'API. Verifica che l\'URL base sia corretto: https://parcelsapp.com/api/v3'
-        errorDetails.type = 'ConnectionError'
-        errorDetails.baseUrl = base
-      } else {
-        errorDetails.hint = 'Errore durante la richiesta all\'API ParcelsApp. Verifica che PARCELS_API_TOKEN sia configurato correttamente su Vercel.'
-        errorDetails.type = 'FetchError'
-      }
-      
-      return res.status(502).json(errorDetails)
     }
 
+    // Fallback a 17Track se configurato
+    if (use17Track && track17ApiKey) {
+      try {
+        console.log(`[Tracking Proxy] Using 17Track API...`)
+        const track17Data = await trackWith17Track(tracking, track17ApiKey)
+        return res.status(200).json(track17Data)
+      } catch (track17Error) {
+        console.error(`[Tracking Proxy] 17Track error:`, track17Error)
+        return res.status(500).json({
+          error: '17Track API error',
+          message: track17Error.message,
+          hint: 'Verifica che TRACK17_API_KEY sia configurato correttamente su Vercel. Ottieni una chiave gratuita su https://www.17track.net/en/api'
+        })
+      }
+    }
+
+    // Se arriviamo qui, nessun provider ha funzionato
+    return res.status(500).json({
+      error: 'No tracking provider available',
+      hint: 'Configura almeno PARCELS_API_TOKEN o TRACK17_API_KEY su Vercel'
+    })
+
   } catch (error) {
-    console.error('[Parcels Proxy] Unexpected error:', error)
+    console.error('[Tracking Proxy] Unexpected error:', error)
     return res.status(500).json({ 
       error: 'proxy error', 
       message: error.message,
-      details: error.message,
       name: error.name,
       type: 'UnexpectedError',
       hint: 'Errore imprevisto nel proxy. Controlla i log di Vercel per maggiori dettagli.',
