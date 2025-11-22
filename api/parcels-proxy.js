@@ -17,8 +17,12 @@ module.exports = async (req, res) => {
 
   try {
     const token = process.env.PARCELS_API_TOKEN
-    // Nota: Verifica l'URL corretto dell'API Parcels nella documentazione
-    // Possibili URL: https://api.parcelsapp.com, https://api.parcl.com, o altro
+    // URL base dell'API di tracking
+    // Esempi di servizi comuni:
+    // - AfterShip: https://api.aftership.com/v4
+    // - TrackingMore: https://api.trackingmore.com/v2
+    // - Ship24: https://api.ship24.com/public/v1
+    // Configura PARCELS_API_BASE su Vercel con l'URL corretto del tuo servizio
     const base = process.env.PARCELS_API_BASE || 'https://api.parcelsapp.com'
     
     // Test endpoint - return detailed configuration status
@@ -133,13 +137,19 @@ module.exports = async (req, res) => {
       })
     }
 
-    // Construct the Parcels API URL
-    // Try multiple possible endpoints
+    // Construct the API URL
+    // Try multiple possible endpoints (diversi servizi usano formati diversi)
+    // AfterShip: /v4/trackings/{tracking_number}
+    // TrackingMore: /trackings/get
+    // Ship24: /trackers/{trackingNumber}
     const possibleEndpoints = [
       `${base}/v1/trackings/${encodeURIComponent(tracking)}`,
+      `${base}/v4/trackings/${encodeURIComponent(tracking)}`,
+      `${base}/v2/trackings/${encodeURIComponent(tracking)}`,
       `${base}/api/v1/trackings/${encodeURIComponent(tracking)}`,
       `${base}/trackings/${encodeURIComponent(tracking)}`,
-      `${base}/tracking/${encodeURIComponent(tracking)}`
+      `${base}/tracking/${encodeURIComponent(tracking)}`,
+      `${base}/trackers/${encodeURIComponent(tracking)}`
     ]
 
     console.log(`[Parcels Proxy] Request for tracking: ${tracking}`)
