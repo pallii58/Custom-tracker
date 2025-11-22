@@ -153,11 +153,32 @@ export default function App() {
         throw new Error('Errore nel parsing della risposta')
       }
 
-      // Normalizza la risposta Parcels API in un formato comune
-      // La struttura può variare, quindi proviamo diversi formati comuni
+      // Normalizza la risposta ParcelsApp API
+      // Struttura ParcelsApp: { shipments: [{ trackingId, events, carrier, ... }], done: boolean }
       let normalizedEvents = []
+      let shipmentData = null
       
-      if (Array.isArray(data)) {
+      // Gestisci la struttura ParcelsApp API
+      if (data.shipments && Array.isArray(data.shipments) && data.shipments.length > 0) {
+        shipmentData = data.shipments[0] // Prendi il primo shipment
+        const shipment = shipmentData
+        
+        // Estrai eventi dal shipment
+        if (shipment.events && Array.isArray(shipment.events)) {
+          normalizedEvents = shipment.events
+        } else if (shipment.tracking && shipment.tracking.events && Array.isArray(shipment.tracking.events)) {
+          normalizedEvents = shipment.tracking.events
+        }
+        
+        // Se non ci sono eventi ma c'è uno stato, crea un evento
+        if (normalizedEvents.length === 0 && shipment.status) {
+          normalizedEvents = [{
+            status: shipment.status,
+            description: shipment.statusDescription || shipment.status,
+            timestamp: shipment.lastUpdate || new Date().toISOString()
+          }]
+        }
+      } else if (Array.isArray(data)) {
         normalizedEvents = data
       } else if (data.events && Array.isArray(data.events)) {
         normalizedEvents = data.events
@@ -171,27 +192,43 @@ export default function App() {
         normalizedEvents = data.statuses
       }
 
-      // Ordina gli eventi per data (più recenti prima o più vecchi prima, a seconda della struttura)
+      // Ordina gli eventi per data (più recenti prima)
       normalizedEvents = normalizedEvents
         .map(ev => ({
-          id: ev.id || ev.timestamp || ev.date || Math.random(),
-          status: ev.status || ev.state || ev.description || ev.message || 'Sconosciuto',
-          note: ev.note || ev.description || ev.message || ev.location || '',
-          occurred_at: ev.occurred_at || ev.timestamp || ev.date || ev.time || ev.created_at || new Date().toISOString(),
-          location: ev.location || ev.place || ''
+          id: ev.id || ev.timestamp || ev.date || ev.time || Math.random(),
+          status: ev.status || ev.state || ev.description || ev.message || ev.title || 'Sconosciuto',
+          note: ev.note || ev.description || ev.message || ev.details || ev.location || '',
+          occurred_at: ev.occurred_at || ev.timestamp || ev.date || ev.time || ev.created_at || ev.datetime || new Date().toISOString(),
+          location: ev.location || ev.place || ev.city || ''
         }))
         .sort((a, b) => new Date(b.occurred_at) - new Date(a.occurred_at)) // Più recenti prima
 
       setEvents(normalizedEvents)
 
-      // Salva informazioni aggiuntive sull'ordine se disponibili
-      if (data.tracking_code || data.code || data.carrier || data.status) {
+      // Salva informazioni aggiuntive sull'ordine
+      if (shipmentData) {
+        // Usa i dati dal shipment ParcelsApp
+        setOrderInfo({
+          tracking_code: shipmentData.trackingId || trackingCode,
+          carrier: shipmentData.carrier?.name || shipmentData.carrier || '',
+          status: shipmentData.status || shipmentData.state || '',
+          estimated_delivery: shipmentData.estimatedDelivery || shipmentData.eta || '',
+          origin: shipmentData.origin || '',
+          destination: shipmentData.destination || ''
+        })
+      } else if (data.tracking_code || data.code || data.carrier || data.status) {
+        // Fallback per altri formati
         setOrderInfo({
           tracking_code: data.tracking_code || data.code || trackingCode,
           carrier: data.carrier || data.courier || '',
           status: data.status || data.current_status || '',
           estimated_delivery: data.estimated_delivery || data.eta || ''
         })
+      }
+      
+      // Mostra messaggio se il tracking non è ancora completo
+      if (data._meta && !data._meta.done) {
+        setError('Tracking in corso... I risultati potrebbero non essere completi. Riprova tra qualche secondo.')
       }
 
       if (normalizedEvents.length === 0) {

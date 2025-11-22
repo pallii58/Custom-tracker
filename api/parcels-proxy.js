@@ -1,128 +1,74 @@
-// Vercel Serverless Function proxy for Parcels API
-// This file should be in /api/parcels-proxy.js for Vercel to recognize it as a serverless function
+// Vercel Serverless Function proxy for ParcelsApp API
+// Documentazione: https://parcelsapp.com/api-docs/
+// API funziona in 2 fasi:
+// 1. POST /shipments/tracking per creare richiesta e ottenere UUID
+// 2. GET /shipments/tracking?uuid=<UUID>&apiKey=<KEY> per leggere risultati
 
 module.exports = async (req, res) => {
   // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end()
   }
 
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method not allowed' })
-  }
-
   try {
-    const token = process.env.PARCELS_API_TOKEN
-    // ParcelsApp API - Documentazione: https://parcelsapp.com/api-docs/
-    // URL base dell'API ParcelsApp v3
+    const apiKey = process.env.PARCELS_API_TOKEN
     const base = process.env.PARCELS_API_BASE || 'https://parcelsapp.com/api/v3'
     
     // Test endpoint - return detailed configuration status
     if (req.query.test === 'true') {
       const testResult = {
-        configured: !!token,
+        configured: !!apiKey,
         baseUrl: base,
-        hasToken: !!token,
-        tokenLength: token ? token.length : 0,
-        tokenPrefix: token ? token.substring(0, 10) + '...' : 'N/A',
-        message: token ? 'Proxy is configured correctly' : 'PARCELS_API_TOKEN is missing',
+        hasToken: !!apiKey,
+        tokenLength: apiKey ? apiKey.length : 0,
+        tokenPrefix: apiKey ? apiKey.substring(0, 10) + '...' : 'N/A',
+        message: apiKey ? 'Proxy is configured correctly' : 'PARCELS_API_TOKEN is missing',
         nodeVersion: process.version,
-        environment: process.env.NODE_ENV || 'production'
+        environment: process.env.NODE_ENV || 'production',
+        apiDocumentation: 'https://parcelsapp.com/api-docs/'
       }
       
-      // Try to make a test request if token is available
-      if (token) {
-        // Prova diversi endpoint possibili per ParcelsApp API v3
-        // Documentazione: https://parcelsapp.com/api-docs/
-        const testEndpoints = [
-          `${base}/trackings/test123`,
-          `${base}/tracking/test123`,
-          `${base}/trackers/test123`,
-          `https://parcelsapp.com/api/v3/trackings/test123`,
-          `https://parcelsapp.com/api/v3/tracking/test123`
-        ]
-        
-        testResult.testedEndpoints = []
-        
-        for (const testUrl of testEndpoints) {
-          try {
-            console.log(`[Test] Trying endpoint: ${testUrl}`)
-            const testResponse = await fetch(testUrl, {
-              method: 'GET',
-              headers: {
-                'Authorization': `Bearer ${token}`,
-                'Accept': 'application/json'
-              },
-              signal: AbortSignal.timeout(5000) // 5 second timeout
-            })
-            
-            testResult.testedEndpoints.push({
-              url: testUrl,
-              status: testResponse.status,
-              statusText: testResponse.statusText,
-              success: testResponse.ok || testResponse.status < 500
-            })
-            
-            // Se otteniamo una risposta (anche 404), significa che l'API è raggiungibile
-            if (testResponse.status < 500) {
-              testResult.apiReachable = true
-              testResult.apiStatus = testResponse.status
-              testResult.apiStatusText = testResponse.statusText
-              testResult.workingEndpoint = testUrl
-              break
-            }
-          } catch (testErr) {
-            testResult.testedEndpoints.push({
-              url: testUrl,
-              error: testErr.message,
-              code: testErr.code,
-              name: testErr.name
-            })
-            
-            // Se è un errore di DNS o connessione, salva i dettagli
-            if (testErr.code === 'ENOTFOUND' || testErr.code === 'ECONNREFUSED' || testErr.name === 'TypeError') {
-              testResult.apiReachable = false
-              testResult.apiError = testErr.message
-              testResult.apiErrorCode = testErr.code
-              testResult.apiErrorName = testErr.name
-            }
+      // Try to test account endpoint
+      if (apiKey) {
+        try {
+          const accountUrl = `${base}/account?apiKey=${encodeURIComponent(apiKey)}`
+          const accountResponse = await fetch(accountUrl, {
+            method: 'GET',
+            headers: { 'Accept': 'application/json' },
+            signal: AbortSignal.timeout(5000)
+          })
+          
+          if (accountResponse.ok) {
+            const accountData = await accountResponse.json()
+            testResult.apiReachable = true
+            testResult.apiStatus = accountResponse.status
+            testResult.accountInfo = accountData
+          } else {
+            testResult.apiReachable = true
+            testResult.apiStatus = accountResponse.status
+            testResult.apiStatusText = accountResponse.statusText
           }
-        }
-        
-        // Se nessun endpoint ha funzionato, prova a fare un ping base
-        if (!testResult.apiReachable) {
-          try {
-            // Prova a fare una richiesta base all'URL senza path
-            const baseTest = await fetch(base, {
-              method: 'GET',
-              signal: AbortSignal.timeout(3000)
-            })
-            testResult.baseUrlReachable = true
-            testResult.baseUrlStatus = baseTest.status
-          } catch (baseErr) {
-            testResult.baseUrlReachable = false
-            testResult.baseUrlError = baseErr.message
-            testResult.baseUrlErrorCode = baseErr.code
-          }
+        } catch (testErr) {
+          testResult.apiReachable = false
+          testResult.apiError = testErr.message
+          testResult.apiErrorCode = testErr.code
+          testResult.apiErrorName = testErr.name
         }
       }
       
       return res.status(200).json(testResult)
     }
     
-    if (!token) {
+    if (!apiKey) {
       console.error('PARCELS_API_TOKEN not set in environment variables')
       return res.status(500).json({ 
         error: 'PARCELS_API_TOKEN not configured',
         message: 'Please set PARCELS_API_TOKEN in Vercel environment variables',
-        hint: 'Go to Vercel Dashboard → Project Settings → Environment Variables',
-        debug: {
-          envKeys: Object.keys(process.env).filter(k => k.includes('PARCELS') || k.includes('API'))
-        }
+        hint: 'Go to Vercel Dashboard → Project Settings → Environment Variables'
       })
     }
 
@@ -130,95 +76,145 @@ module.exports = async (req, res) => {
     if (!tracking) {
       return res.status(400).json({ 
         error: 'tracking query parameter required',
-        usage: 'Use ?tracking=YOUR_TRACKING_CODE'
+        usage: 'Use ?tracking=YOUR_TRACKING_CODE&destinationCountry=COUNTRY (optional)'
       })
     }
 
-    // Construct the ParcelsApp API v3 URL
-    // Documentazione: https://parcelsapp.com/api-docs/
-    // API Base: https://parcelsapp.com/api/v3
-    // Prova diversi formati di endpoint possibili
-    const possibleEndpoints = [
-      `${base}/trackings/${encodeURIComponent(tracking)}`,
-      `${base}/tracking/${encodeURIComponent(tracking)}`,
-      `${base}/trackers/${encodeURIComponent(tracking)}`,
-      `https://parcelsapp.com/api/v3/trackings/${encodeURIComponent(tracking)}`,
-      `https://parcelsapp.com/api/v3/tracking/${encodeURIComponent(tracking)}`
-    ]
+    const destinationCountry = req.query.destinationCountry || req.query.country || ''
+    const language = req.query.language || 'en'
 
     console.log(`[Parcels Proxy] Request for tracking: ${tracking}`)
     console.log(`[Parcels Proxy] Base URL: ${base}`)
-    console.log(`[Parcels Proxy] Token present: ${!!token}`)
-
-    // Try the first endpoint (most common)
-    const apiUrl = possibleEndpoints[0]
-    console.log(`[Parcels Proxy] Attempting: ${apiUrl}`)
+    console.log(`[Parcels Proxy] API Key present: ${!!apiKey}`)
 
     try {
-      const response = await fetch(apiUrl, {
-        method: 'GET',
+      // Step 1: Create tracking request (POST)
+      const trackingUrl = `${base}/shipments/tracking`
+      const trackingPayload = {
+        apiKey: apiKey,
+        shipments: [
+          {
+            trackingId: tracking,
+            ...(destinationCountry && { destinationCountry: destinationCountry })
+          }
+        ],
+        language: language
+      }
+
+      console.log(`[Parcels Proxy] Creating tracking request...`)
+      const createResponse = await fetch(trackingUrl, {
+        method: 'POST',
         headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json',
           'Content-Type': 'application/json',
-          'User-Agent': 'Parcels-Proxy/1.0'
+          'Accept': 'application/json'
         },
-        signal: AbortSignal.timeout(30000) // 30 second timeout
+        body: JSON.stringify(trackingPayload),
+        signal: AbortSignal.timeout(30000)
       })
 
-      const responseText = await response.text()
-      console.log(`[Parcels Proxy] Response status: ${response.status}`)
-      console.log(`[Parcels Proxy] Response length: ${responseText.length}`)
+      const createResponseText = await createResponse.text()
+      console.log(`[Parcels Proxy] Create response status: ${createResponse.status}`)
 
-      if (!response.ok) {
+      if (!createResponse.ok) {
         let errorData
         try {
-          errorData = JSON.parse(responseText)
+          errorData = JSON.parse(createResponseText)
         } catch (e) {
-          errorData = { raw: responseText.substring(0, 500) }
+          errorData = { raw: createResponseText.substring(0, 500) }
         }
 
-        return res.status(response.status).json({
-          error: 'Parcels API error',
-          status: response.status,
-          statusText: response.statusText,
-          details: errorData,
-          url: apiUrl,
-          headers: Object.fromEntries(response.headers.entries())
+        return res.status(createResponse.status).json({
+          error: 'Failed to create tracking request',
+          status: createResponse.status,
+          statusText: createResponse.statusText,
+          details: errorData
         })
       }
 
-      // Try to parse as JSON
+      let createData
       try {
-        const jsonData = JSON.parse(responseText)
-        return res.status(200).json(jsonData)
-      } catch (parseError) {
-        // If not JSON, return as text
-        return res.status(200).send(responseText)
+        createData = JSON.parse(createResponseText)
+      } catch (e) {
+        return res.status(500).json({
+          error: 'Invalid response from API',
+          details: createResponseText.substring(0, 500)
+        })
       }
+
+      const uuid = createData.uuid
+      if (!uuid) {
+        return res.status(500).json({
+          error: 'No UUID received from tracking request',
+          response: createData
+        })
+      }
+
+      console.log(`[Parcels Proxy] Tracking request created, UUID: ${uuid}`)
+
+      // Step 2: Get tracking results (GET)
+      // Try to get results immediately (might be cached)
+      const getUrl = `${base}/shipments/tracking?uuid=${encodeURIComponent(uuid)}&apiKey=${encodeURIComponent(apiKey)}`
+      
+      console.log(`[Parcels Proxy] Fetching tracking results...`)
+      const getResponse = await fetch(getUrl, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json'
+        },
+        signal: AbortSignal.timeout(30000)
+      })
+
+      const getResponseText = await getResponse.text()
+      console.log(`[Parcels Proxy] Get response status: ${getResponse.status}`)
+
+      if (!getResponse.ok) {
+        let errorData
+        try {
+          errorData = JSON.parse(getResponseText)
+        } catch (e) {
+          errorData = { raw: getResponseText.substring(0, 500) }
+        }
+
+        return res.status(getResponse.status).json({
+          error: 'Failed to get tracking results',
+          status: getResponse.status,
+          statusText: getResponse.statusText,
+          details: errorData,
+          uuid: uuid
+        })
+      }
+
+      let trackingData
+      try {
+        trackingData = JSON.parse(getResponseText)
+      } catch (e) {
+        return res.status(500).json({
+          error: 'Invalid response from API',
+          details: getResponseText.substring(0, 500),
+          uuid: uuid
+        })
+      }
+
+      // Return tracking data
+      // Note: If done=false, the client might need to poll again
+      return res.status(200).json({
+        ...trackingData,
+        uuid: uuid,
+        _meta: {
+          done: trackingData.done || false,
+          fromCache: createData.fromCache || false
+        }
+      })
 
     } catch (fetchError) {
       console.error('[Parcels Proxy] Fetch error:', fetchError)
       
-      // If first endpoint fails, try others
-      if (fetchError.name === 'AbortError' || fetchError.code === 'ENOTFOUND' || fetchError.code === 'ECONNREFUSED') {
-        return res.status(502).json({
-          error: 'proxy error',
-          details: fetchError.message,
-          code: fetchError.code,
-          url: apiUrl,
-          hint: 'The API endpoint might be incorrect or unreachable. Check PARCELS_API_BASE environment variable.',
-          triedUrl: apiUrl
-        })
-      }
-
       return res.status(502).json({
         error: 'proxy error',
         details: fetchError.message,
         code: fetchError.code,
         name: fetchError.name,
-        url: apiUrl,
-        hint: 'Check that PARCELS_API_TOKEN and PARCELS_API_BASE are correctly set in Vercel environment variables'
+        hint: 'Check that PARCELS_API_TOKEN is correctly set in Vercel environment variables'
       })
     }
 
