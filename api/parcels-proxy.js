@@ -1,12 +1,14 @@
 // Vercel Serverless Function proxy for Package Tracking APIs
 // Supporta multiple API providers con fallback automatico:
 // 1. ParcelsApp API (https://parcelsapp.com/api-docs/)
-// 2. 17Track API (https://www.17track.net/en/api) - Piano gratuito generoso
+// 2. TrackingMore API (https://www.trackingmore.com/tracking-api) - Piano gratuito generoso
+// 3. 17Track API (https://www.17track.net/en/api) - Piano gratuito generoso
 //
 // Configurazione:
 // - PARCELS_API_TOKEN: API key per ParcelsApp
+// - TRACKINGMORE_API_KEY: API key per TrackingMore (opzionale, usato come fallback)
 // - TRACK17_API_KEY: API key per 17Track (opzionale, usato come fallback)
-// - TRACKING_PROVIDER: 'parcelsapp' (default) o '17track' o 'auto' (fallback automatico)
+// - TRACKING_PROVIDER: 'parcelsapp' (default) o 'trackingmore' o '17track' o 'auto' (fallback automatico)
 //
 // Modalità MOCK: Imposta USE_MOCK_DATA=true per usare dati di test (solo sviluppo)
 
@@ -87,6 +89,109 @@ async function trackWith17Track(trackingNumber, apiKey) {
   throw new Error('No tracking data from 17Track')
 }
 
+// Helper function per TrackingMore API
+async function trackWithTrackingMore(trackingNumber, apiKey, carrierCode = '') {
+  const base = 'https://api.trackingmore.com/v4'
+  
+  // TrackingMore API v4 - Crea tracking
+  const createResponse = await fetch(`${base}/trackings/post`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Tracking-Api-Key': apiKey
+    },
+    body: JSON.stringify({
+      tracking_number: trackingNumber,
+      ...(carrierCode && { carrier_code: carrierCode })
+    }),
+    signal: AbortSignal.timeout(30000)
+  })
+  
+  if (!createResponse.ok) {
+    const errorText = await createResponse.text()
+    throw new Error(`TrackingMore API error: ${createResponse.status} - ${errorText}`)
+  }
+  
+  const createData = await createResponse.json()
+  
+  // Se la risposta contiene già i dati, restituiscili
+  if (createData.data) {
+    const track = createData.data
+    return {
+      done: true,
+      shipments: [{
+        trackingId: track.tracking_number || trackingNumber,
+        carrier: {
+          name: track.carrier_code || 'Unknown',
+          slug: track.carrier_code || 'unknown'
+        },
+        status: track.current_status || 'unknown',
+        origin: track.origin || '',
+        destination: track.destination || '',
+        events: (track.origin_info?.trackinfo || []).map((event, idx) => ({
+          id: idx.toString(),
+          status: event.status || 'unknown',
+          description: event.details || event.checkpoint_status || '',
+          timestamp: event.checkpoint_time || event.datetime || new Date().toISOString(),
+          location: event.location || ''
+        }))
+      }],
+      _meta: {
+        done: true,
+        fromCache: false,
+        provider: 'trackingmore'
+      }
+    }
+  }
+  
+  // Se non ci sono dati, prova a recuperarli
+  const getResponse = await fetch(`${base}/trackings/get?tracking_number=${encodeURIComponent(trackingNumber)}`, {
+    method: 'GET',
+    headers: {
+      'Tracking-Api-Key': apiKey
+    },
+    signal: AbortSignal.timeout(30000)
+  })
+  
+  if (!getResponse.ok) {
+    const errorText = await getResponse.text()
+    throw new Error(`TrackingMore get error: ${getResponse.status} - ${errorText}`)
+  }
+  
+  const trackData = await getResponse.json()
+  
+  if (trackData.data) {
+    const track = trackData.data
+    return {
+      done: true,
+      shipments: [{
+        trackingId: track.tracking_number || trackingNumber,
+        carrier: {
+          name: track.carrier_code || 'Unknown',
+          slug: track.carrier_code || 'unknown'
+        },
+        status: track.current_status || 'unknown',
+        origin: track.origin || '',
+        destination: track.destination || '',
+        events: (track.origin_info?.trackinfo || []).map((event, idx) => ({
+          id: idx.toString(),
+          status: event.status || 'unknown',
+          description: event.details || event.checkpoint_status || '',
+          timestamp: event.checkpoint_time || event.datetime || new Date().toISOString(),
+          location: event.location || ''
+        }))
+      }],
+      _meta: {
+        done: true,
+        fromCache: false,
+        provider: 'trackingmore'
+      }
+    }
+  }
+  
+  throw new Error('No tracking data from TrackingMore')
+}
+
 module.exports = async (req, res) => {
   // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -99,8 +204,9 @@ module.exports = async (req, res) => {
 
   try {
     const parcelsApiKey = process.env.PARCELS_API_TOKEN
+    const trackingMoreApiKey = process.env.TRACKINGMORE_API_KEY
     const track17ApiKey = process.env.TRACK17_API_KEY
-    const provider = process.env.TRACKING_PROVIDER || 'auto' // 'parcelsapp', '17track', o 'auto'
+    const provider = process.env.TRACKING_PROVIDER || 'auto' // 'parcelsapp', 'trackingmore', '17track', o 'auto'
     
     // Forza l'URL corretto anche se è configurato quello vecchio su Vercel
     let parcelsBase = process.env.PARCELS_API_BASE || 'https://parcelsapp.com/api/v3'
@@ -114,7 +220,7 @@ module.exports = async (req, res) => {
     // Test endpoint - return detailed configuration status
     if (req.query.test === 'true') {
       const testResult = {
-        configured: !!(parcelsApiKey || track17ApiKey),
+        configured: !!(parcelsApiKey || trackingMoreApiKey || track17ApiKey),
         provider: provider,
         parcelsApp: {
           configured: !!parcelsApiKey,
@@ -122,17 +228,24 @@ module.exports = async (req, res) => {
           tokenLength: parcelsApiKey ? parcelsApiKey.length : 0,
           baseUrl: parcelsBase
         },
+        trackingMore: {
+          configured: !!trackingMoreApiKey,
+          hasToken: !!trackingMoreApiKey,
+          tokenLength: trackingMoreApiKey ? trackingMoreApiKey.length : 0,
+          baseUrl: 'https://api.trackingmore.com/v4'
+        },
         track17: {
           configured: !!track17ApiKey,
           hasToken: !!track17ApiKey,
           tokenLength: track17ApiKey ? track17ApiKey.length : 0,
           baseUrl: 'https://api.17track.net/track/v2.2'
         },
-        message: (parcelsApiKey || track17ApiKey) ? 'Proxy is configured correctly' : 'No API keys configured',
+        message: (parcelsApiKey || trackingMoreApiKey || track17ApiKey) ? 'Proxy is configured correctly' : 'No API keys configured',
         nodeVersion: process.version,
         environment: process.env.NODE_ENV || 'production',
         apiDocumentation: {
           parcelsapp: 'https://parcelsapp.com/api-docs/',
+          trackingmore: 'https://www.trackingmore.com/tracking-api',
           track17: 'https://www.17track.net/en/api'
         }
       }
@@ -205,11 +318,12 @@ module.exports = async (req, res) => {
 
     console.log(`[Tracking Proxy] Request for tracking: ${tracking}, Provider: ${provider}`)
 
-    // Se provider è '17track' o 'auto' e ParcelsApp non è disponibile, usa 17Track
-    const use17Track = provider === '17track' || (provider === 'auto' && track17ApiKey)
+    // Determina quale provider usare
+    const useTrackingMore = provider === 'trackingmore' || (provider === 'auto' && trackingMoreApiKey)
+    const use17Track = provider === '17track' || (provider === 'auto' && track17ApiKey && !trackingMoreApiKey)
     
-    // Prova prima ParcelsApp (se configurato e provider non è solo 17track)
-    if (parcelsApiKey && provider !== '17track') {
+    // Prova prima ParcelsApp (se configurato e provider non è solo trackingmore o 17track)
+    if (parcelsApiKey && provider !== 'trackingmore' && provider !== '17track') {
       try {
         // Step 1: Create tracking request (POST)
         const trackingUrl = `${parcelsBase}/shipments/tracking`
@@ -246,7 +360,7 @@ module.exports = async (req, res) => {
 
           // Controlla se c'è un errore nella risposta
           if (createData.error === 'SUBSCRIPTION_LIMIT_REACHED') {
-            console.log(`[Tracking Proxy] ParcelsApp limit reached, trying 17Track fallback...`)
+            console.log(`[Tracking Proxy] ParcelsApp limit reached, trying fallback...`)
             throw new Error('SUBSCRIPTION_LIMIT_REACHED')
           }
 
@@ -263,8 +377,11 @@ module.exports = async (req, res) => {
               hint = 'Il codice di tracking inserito non è valido.'
             }
             
-            // Se abbiamo 17Track come fallback, provalo
-            if (use17Track && track17ApiKey) {
+            // Se abbiamo fallback disponibili, provali
+            if (useTrackingMore && trackingMoreApiKey) {
+              console.log(`[Tracking Proxy] ParcelsApp error, trying TrackingMore fallback...`)
+              throw new Error('PARCELSAPP_ERROR')
+            } else if (use17Track && track17ApiKey) {
               console.log(`[Tracking Proxy] ParcelsApp error, trying 17Track fallback...`)
               throw new Error('PARCELSAPP_ERROR')
             }
@@ -280,8 +397,11 @@ module.exports = async (req, res) => {
           // L'UUID potrebbe essere in diversi campi
           const uuid = createData.uuid || createData.id || createData.trackingId || createData.requestId
           if (!uuid) {
-            // Se abbiamo 17Track come fallback, provalo
-            if (use17Track && track17ApiKey) {
+            // Se abbiamo fallback disponibili, provali
+            if (useTrackingMore && trackingMoreApiKey) {
+              console.log(`[Tracking Proxy] No UUID from ParcelsApp, trying TrackingMore fallback...`)
+              throw new Error('NO_UUID')
+            } else if (use17Track && track17ApiKey) {
               console.log(`[Tracking Proxy] No UUID from ParcelsApp, trying 17Track fallback...`)
               throw new Error('NO_UUID')
             }
@@ -326,17 +446,41 @@ module.exports = async (req, res) => {
           }
         }
       } catch (parcelsError) {
-        // Se è SUBSCRIPTION_LIMIT_REACHED e abbiamo 17Track, fallback
-        if (parcelsError.message === 'SUBSCRIPTION_LIMIT_REACHED' && use17Track && track17ApiKey) {
-          console.log(`[Tracking Proxy] ParcelsApp limit reached, using 17Track fallback`)
-        } else if (parcelsError.message !== 'PARCELSAPP_ERROR' && parcelsError.message !== 'NO_UUID') {
+        // Se è SUBSCRIPTION_LIMIT_REACHED o altro errore, prova fallback
+        if (parcelsError.message === 'SUBSCRIPTION_LIMIT_REACHED' || 
+            parcelsError.message === 'PARCELSAPP_ERROR' || 
+            parcelsError.message === 'NO_UUID') {
+          console.log(`[Tracking Proxy] ParcelsApp failed, trying fallback providers...`)
+          // Continua con i fallback
+        } else {
           // Se non è un errore che vogliamo gestire con fallback, rilancia
           throw parcelsError
         }
       }
     }
 
-    // Fallback a 17Track se configurato
+    // Fallback a TrackingMore se configurato (priorità più alta di 17Track)
+    if (useTrackingMore && trackingMoreApiKey) {
+      try {
+        console.log(`[Tracking Proxy] Using TrackingMore API...`)
+        const trackingMoreData = await trackWithTrackingMore(tracking, trackingMoreApiKey)
+        return res.status(200).json(trackingMoreData)
+      } catch (trackingMoreError) {
+        console.error(`[Tracking Proxy] TrackingMore error:`, trackingMoreError)
+        // Se TrackingMore fallisce, prova 17Track come ultimo fallback
+        if (use17Track && track17ApiKey) {
+          console.log(`[Tracking Proxy] TrackingMore failed, trying 17Track fallback...`)
+        } else {
+          return res.status(500).json({
+            error: 'TrackingMore API error',
+            message: trackingMoreError.message,
+            hint: 'Verifica che TRACKINGMORE_API_KEY sia configurato correttamente su Vercel. Ottieni una chiave gratuita su https://www.trackingmore.com/tracking-api'
+          })
+        }
+      }
+    }
+
+    // Fallback a 17Track se configurato (ultimo fallback)
     if (use17Track && track17ApiKey) {
       try {
         console.log(`[Tracking Proxy] Using 17Track API...`)
@@ -355,7 +499,7 @@ module.exports = async (req, res) => {
     // Se arriviamo qui, nessun provider ha funzionato
     return res.status(500).json({
       error: 'No tracking provider available',
-      hint: 'Configura almeno PARCELS_API_TOKEN o TRACK17_API_KEY su Vercel'
+      hint: 'Configura almeno una di queste: PARCELS_API_TOKEN, TRACKINGMORE_API_KEY, o TRACK17_API_KEY su Vercel'
     })
 
   } catch (error) {
