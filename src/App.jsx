@@ -45,30 +45,59 @@ export default function App() {
       }
       
       if (!res.ok) {
-        let errorData
+        let errorData = {}
         let responseText = ''
+        
         try {
           responseText = await res.text()
-          errorData = JSON.parse(responseText)
-        } catch (e) {
-          // Se non è JSON, usa il testo della risposta
+          console.log('Response text:', responseText)
+          
+          if (responseText && responseText.trim()) {
+            try {
+              errorData = JSON.parse(responseText)
+            } catch (parseErr) {
+              // Se non è JSON valido, usa il testo come dettaglio
+              errorData = { 
+                error: `Errore HTTP ${res.status}`,
+                rawResponse: responseText
+              }
+            }
+          } else {
+            // Risposta vuota
+            errorData = { 
+              error: `Errore HTTP ${res.status} - Risposta vuota dal server`,
+              emptyResponse: true
+            }
+          }
+        } catch (textErr) {
+          // Errore nel leggere il testo della risposta
+          console.error('Errore nel leggere risposta:', textErr)
           errorData = { 
-            error: `Errore HTTP ${res.status}`, 
-            status: res.status,
-            statusText: res.statusText,
-            rawResponse: responseText.substring(0, 500)
+            error: `Errore HTTP ${res.status}`,
+            readError: textErr.message
           }
         }
         
-        // Crea un oggetto errore dettagliato
-        const errorMessage = errorData.error || errorData.message || `Errore ${res.status}`
+        // Crea un oggetto errore dettagliato con tutte le informazioni disponibili
+        const errorMessage = errorData.error || errorData.message || `Errore HTTP ${res.status}: ${res.statusText || 'Bad Gateway'}`
         const details = {
           status: res.status,
-          statusText: res.statusText,
+          statusText: res.statusText || 'Bad Gateway',
           message: errorMessage,
-          details: errorData.details || errorData.hint || errorData.rawResponse || errorData,
+          type: 'HTTPError',
+          details: errorData.details || errorData.hint || errorData.rawResponse || (errorData.emptyResponse ? 'Il server ha restituito una risposta vuota' : 'Nessun dettaglio disponibile'),
           url: proxyUrl,
-          fullError: errorData
+          fullError: errorData,
+          responseHeaders: Object.fromEntries(res.headers.entries())
+        }
+        
+        // Aggiungi suggerimenti specifici per status code comuni
+        if (res.status === 502) {
+          details.suggestion = 'Il proxy non è riuscito a connettersi all\'API Parcels. Verifica che PARCELS_API_TOKEN sia configurato correttamente su Vercel.'
+        } else if (res.status === 500) {
+          details.suggestion = 'Errore interno del server. Controlla i log di Vercel per maggiori dettagli.'
+        } else if (res.status === 404) {
+          details.suggestion = 'Endpoint non trovato. Verifica che il percorso dell\'API sia corretto.'
         }
         
         setError(errorMessage)
@@ -232,11 +261,28 @@ export default function App() {
                     <pre className="error-json">{JSON.stringify(errorDetails.fullError, null, 2)}</pre>
                   </div>
                 )}
-                {errorDetails.status === 502 && (
+                {errorDetails.suggestion && (
+                  <div className="error-hint">
+                    <strong>💡 Suggerimento:</strong> {errorDetails.suggestion}
+                    {errorDetails.status === 502 && (
+                      <>
+                        <br />
+                        Vai su Vercel Dashboard → Settings → Environment Variables e verifica che <code>PARCELS_API_TOKEN</code> sia configurato.
+                      </>
+                    )}
+                  </div>
+                )}
+                {!errorDetails.suggestion && errorDetails.status === 502 && (
                   <div className="error-hint">
                     <strong>💡 Suggerimento:</strong> Verifica che <code>PARCELS_API_TOKEN</code> sia configurato nelle variabili d'ambiente di Vercel.
                     <br />
                     Vai su Vercel Dashboard → Settings → Environment Variables
+                  </div>
+                )}
+                {errorDetails.responseHeaders && Object.keys(errorDetails.responseHeaders).length > 0 && (
+                  <div className="error-detail-item">
+                    <strong>Header Risposta:</strong>
+                    <pre className="error-json">{JSON.stringify(errorDetails.responseHeaders, null, 2)}</pre>
                   </div>
                 )}
                 {errorDetails.status === 500 && errorDetails.details && typeof errorDetails.details === 'string' && errorDetails.details.includes('PARCELS_API_TOKEN') && (
