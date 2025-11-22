@@ -26,6 +26,9 @@ export default function App() {
     try {
       let res
       let apiUrl
+      let proxyUrl = typeof window !== 'undefined' && window.location.hostname === 'localhost'
+        ? `http://localhost:3000/parcels?tracking=${encodeURIComponent(trackingCode)}`
+        : `/api/parcels-proxy?tracking=${encodeURIComponent(trackingCode)}`
       
       // Opzione per bypassare il proxy e chiamare direttamente l'API (solo per test)
       if (useDirectAPI && apiToken) {
@@ -55,10 +58,6 @@ export default function App() {
         }
       } else {
         // Usa il proxy normale
-        const proxyUrl = typeof window !== 'undefined' && window.location.hostname === 'localhost'
-          ? `http://localhost:3000/parcels?tracking=${encodeURIComponent(trackingCode)}`
-          : `/api/parcels-proxy?tracking=${encodeURIComponent(trackingCode)}`
-
         try {
           res = await fetch(proxyUrl)
         } catch (fetchError) {

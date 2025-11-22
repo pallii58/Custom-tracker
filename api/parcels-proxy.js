@@ -17,6 +17,8 @@ module.exports = async (req, res) => {
 
   try {
     const token = process.env.PARCELS_API_TOKEN
+    // Nota: Verifica l'URL corretto dell'API Parcels nella documentazione
+    // Possibili URL: https://api.parcelsapp.com, https://api.parcl.com, o altro
     const base = process.env.PARCELS_API_BASE || 'https://api.parcelsapp.com'
     
     // Test endpoint - return detailed configuration status
