@@ -189,6 +189,33 @@ module.exports = async (req, res) => {
         })
       }
 
+      // Controlla se c'è un errore nella risposta
+      if (createData.error) {
+        console.error(`[Parcels Proxy] API returned error:`, createData.error)
+        
+        // Gestisci errori specifici dell'API
+        let errorMessage = createData.error
+        let hint = ''
+        
+        if (createData.error === 'SUBSCRIPTION_LIMIT_REACHED') {
+          errorMessage = 'Limite di richieste raggiunto'
+          hint = 'Il tuo account ParcelsApp ha raggiunto il limite di richieste del piano corrente. Verifica il tuo piano su https://parcelsapp.com o aspetta il reset del limite.'
+        } else if (createData.error === 'INVALID_API_KEY' || createData.error === 'UNAUTHORIZED') {
+          errorMessage = 'API Key non valida'
+          hint = 'La chiave API non è valida o è scaduta. Verifica PARCELS_API_TOKEN su Vercel.'
+        } else if (createData.error === 'INVALID_TRACKING_ID') {
+          errorMessage = 'Tracking ID non valido'
+          hint = 'Il codice di tracking inserito non è valido o non è riconosciuto dal sistema.'
+        }
+        
+        return res.status(400).json({
+          error: errorMessage,
+          apiError: createData.error,
+          details: createData,
+          hint: hint || 'Errore dall\'API ParcelsApp. Controlla i dettagli per maggiori informazioni.'
+        })
+      }
+      
       // L'UUID potrebbe essere in diversi campi
       const uuid = createData.uuid || createData.id || createData.trackingId || createData.requestId
       if (!uuid) {
