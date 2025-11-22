@@ -470,6 +470,17 @@ export default function App() {
                     <strong>💡 Suggerimento:</strong> Il token API non è configurato. Aggiungi <code>PARCELS_API_TOKEN</code> nelle variabili d'ambiente di Vercel.
                   </div>
                 )}
+                {errorDetails.response && (
+                  <div className="error-detail-item">
+                    <strong>Risposta API:</strong>
+                    <pre className="error-json">{JSON.stringify(errorDetails.response, null, 2)}</pre>
+                  </div>
+                )}
+                {errorDetails.responseKeys && (
+                  <div className="error-detail-item">
+                    <strong>Chiavi nella risposta:</strong> {errorDetails.responseKeys.join(', ')}
+                  </div>
+                )}
                 {!errorDetails.status && !errorDetails.details && !errorDetails.originalError && (
                   <div className="error-detail-item">
                     <strong>Informazioni:</strong> Errore generico durante la richiesta. Controlla la console del browser per maggiori dettagli.
