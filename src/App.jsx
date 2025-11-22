@@ -5,6 +5,7 @@ export default function App() {
   const [events, setEvents] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [errorDetails, setErrorDetails] = useState(null)
   const [orderInfo, setOrderInfo] = useState(null)
 
   async function fetchTracking() {
@@ -15,6 +16,7 @@ export default function App() {
 
     setLoading(true)
     setError(null)
+    setErrorDetails(null)
     setEvents([])
     setOrderInfo(null)
 
@@ -28,8 +30,30 @@ export default function App() {
       const res = await fetch(proxyUrl)
       
       if (!res.ok) {
-        const errorData = await res.json().catch(() => ({ error: `Errore ${res.status}` }))
-        throw new Error(errorData.error || `Errore nel chiamare Parcels API: ${res.status}`)
+        let errorData
+        try {
+          errorData = await res.json()
+        } catch (e) {
+          errorData = { 
+            error: `Errore HTTP ${res.status}`, 
+            status: res.status,
+            statusText: res.statusText 
+          }
+        }
+        
+        // Crea un oggetto errore dettagliato
+        const errorMessage = errorData.error || errorData.message || `Errore ${res.status}`
+        const details = {
+          status: res.status,
+          statusText: res.statusText,
+          message: errorMessage,
+          details: errorData.details || errorData.hint || errorData,
+          url: proxyUrl
+        }
+        
+        setError(errorMessage)
+        setErrorDetails(details)
+        throw new Error(errorMessage)
       }
 
       const data = await res.json()
@@ -79,8 +103,18 @@ export default function App() {
         setError('Nessun evento di tracking trovato per questo codice')
       }
     } catch (e) {
-      console.error(e)
-      setError(e.message || String(e))
+      console.error('Errore nel fetch tracking:', e)
+      
+      // Se non abbiamo già impostato errorDetails, crealo ora
+      if (!errorDetails) {
+        setError(e.message || String(e))
+        setErrorDetails({
+          message: e.message || String(e),
+          type: e.name || 'Error',
+          stack: process.env.NODE_ENV === 'development' ? e.stack : undefined
+        })
+      }
+      
       setEvents([])
     } finally {
       setLoading(false)
@@ -112,7 +146,52 @@ export default function App() {
         </div>
 
         {loading && <p>Caricamento…</p>}
-        {error && <p className="error">{error}</p>}
+        
+        {error && (
+          <div className="error-box">
+            <div className="error-header">
+              <strong>❌ Errore</strong>
+            </div>
+            <div className="error-message">{error}</div>
+            {errorDetails && (
+              <div className="error-details">
+                {errorDetails.status && (
+                  <div className="error-detail-item">
+                    <strong>Status Code:</strong> {errorDetails.status} {errorDetails.statusText && `(${errorDetails.statusText})`}
+                  </div>
+                )}
+                {errorDetails.details && typeof errorDetails.details === 'string' && (
+                  <div className="error-detail-item">
+                    <strong>Dettagli:</strong> {errorDetails.details}
+                  </div>
+                )}
+                {errorDetails.details && typeof errorDetails.details === 'object' && (
+                  <div className="error-detail-item">
+                    <strong>Dettagli:</strong>
+                    <pre className="error-json">{JSON.stringify(errorDetails.details, null, 2)}</pre>
+                  </div>
+                )}
+                {errorDetails.url && (
+                  <div className="error-detail-item">
+                    <strong>URL richiesta:</strong> <code>{errorDetails.url}</code>
+                  </div>
+                )}
+                {errorDetails.status === 502 && (
+                  <div className="error-hint">
+                    <strong>💡 Suggerimento:</strong> Verifica che <code>PARCELS_API_TOKEN</code> sia configurato nelle variabili d'ambiente di Vercel.
+                    <br />
+                    Vai su Vercel Dashboard → Settings → Environment Variables
+                  </div>
+                )}
+                {errorDetails.status === 500 && errorDetails.details && typeof errorDetails.details === 'string' && errorDetails.details.includes('PARCELS_API_TOKEN') && (
+                  <div className="error-hint">
+                    <strong>💡 Suggerimento:</strong> Il token API non è configurato. Aggiungi <code>PARCELS_API_TOKEN</code> nelle variabili d'ambiente di Vercel.
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {orderInfo && !loading && (
           <div className="order-info">
