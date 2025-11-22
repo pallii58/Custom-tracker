@@ -2,13 +2,17 @@
 // Supporta multiple API providers con fallback automatico:
 // 1. ParcelsApp API (https://parcelsapp.com/api-docs/)
 // 2. TrackingMore API (https://www.trackingmore.com/tracking-api) - Piano gratuito generoso
-// 3. 17Track API (https://www.17track.net/en/api) - Piano gratuito generoso
+// 3. UPS Tracking API (https://developer.ups.com) - Richiede registrazione gratuita
+// 4. 17Track API (https://www.17track.net/en/api) - Piano gratuito generoso
 //
 // Configurazione:
 // - PARCELS_API_TOKEN: API key per ParcelsApp
 // - TRACKINGMORE_API_KEY: API key per TrackingMore (opzionale, usato come fallback)
+// - UPS_ACCESS_KEY: Access Key per UPS API
+// - UPS_USER_ID: User ID per UPS API
+// - UPS_PASSWORD: Password per UPS API
 // - TRACK17_API_KEY: API key per 17Track (opzionale, usato come fallback)
-// - TRACKING_PROVIDER: 'parcelsapp' (default) o 'trackingmore' o '17track' o 'auto' (fallback automatico)
+// - TRACKING_PROVIDER: 'parcelsapp' (default) o 'trackingmore' o 'ups' o '17track' o 'auto' (fallback automatico)
 //
 // Modalità MOCK: Imposta USE_MOCK_DATA=true per usare dati di test (solo sviluppo)
 
@@ -192,6 +196,103 @@ async function trackWithTrackingMore(trackingNumber, apiKey, carrierCode = '') {
   throw new Error('No tracking data from TrackingMore')
 }
 
+// Helper function per UPS Tracking API
+async function trackWithUPS(trackingNumber, accessKey, userId, password) {
+  // UPS usa OAuth 2.0 - prima otteniamo il token usando Basic Auth
+  // Usa endpoint di test (wwwcie) o produzione (onlinetools) in base all'ambiente
+  const useProduction = process.env.UPS_USE_PRODUCTION === 'true'
+  const oauthUrl = useProduction 
+    ? 'https://onlinetools.ups.com/security/v1/oauth/token'
+    : 'https://wwwcie.ups.com/security/v1/oauth/token'
+  const trackingUrl = useProduction
+    ? 'https://onlinetools.ups.com/api/track/v1/details'
+    : 'https://wwwcie.ups.com/api/track/v1/details'
+  
+  // Step 1: Ottieni OAuth token usando Basic Auth
+  // UPS richiede Basic Auth con Access Key come username e Secret come password
+  // Ma qui usiamo User ID e Password come credenziali Basic Auth
+  const basicAuth = Buffer.from(`${userId}:${password}`).toString('base64')
+  
+  const oauthResponse = await fetch(oauthUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Authorization': `Basic ${basicAuth}`,
+      'x-merchant-id': accessKey
+    },
+    body: new URLSearchParams({
+      grant_type: 'client_credentials'
+    }),
+    signal: AbortSignal.timeout(30000)
+  })
+  
+  if (!oauthResponse.ok) {
+    const errorText = await oauthResponse.text()
+    throw new Error(`UPS OAuth error: ${oauthResponse.status} - ${errorText}`)
+  }
+  
+  const oauthData = await oauthResponse.json()
+  const accessToken = oauthData.access_token
+  
+  if (!accessToken) {
+    throw new Error('No access token from UPS OAuth')
+  }
+  
+  // Step 2: Usa il token per ottenere i dati di tracking
+  const trackingResponse = await fetch(`${trackingUrl}/${trackingNumber}`, {
+    method: 'GET',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+      'transId': `TRACK${Date.now()}`,
+      'transactionSrc': 'custom-tracker'
+    },
+    signal: AbortSignal.timeout(30000)
+  })
+  
+  if (!trackingResponse.ok) {
+    const errorText = await trackingResponse.text()
+    throw new Error(`UPS Tracking API error: ${trackingResponse.status} - ${errorText}`)
+  }
+  
+  const trackData = await trackingResponse.json()
+  
+  // Normalizza la risposta UPS al formato ParcelsApp
+  if (trackData.trackResponse && trackData.trackResponse.shipment) {
+    const shipment = trackData.trackResponse.shipment[0]
+    const packageData = shipment.package[0]
+    const activity = packageData.activity || []
+    
+    return {
+      done: true,
+      shipments: [{
+        trackingId: packageData.trackingNumber || trackingNumber,
+        carrier: {
+          name: 'UPS',
+          slug: 'ups'
+        },
+        status: packageData.currentStatus?.status?.description || 'unknown',
+        origin: shipment.shipper?.address?.city || '',
+        destination: shipment.shipTo?.address?.city || '',
+        events: activity.map((event, idx) => ({
+          id: idx.toString(),
+          status: event.status?.status || 'unknown',
+          description: event.status?.description || event.status?.type || '',
+          timestamp: event.date || new Date().toISOString(),
+          location: event.location?.address?.city || event.location?.address?.stateProvince || ''
+        }))
+      }],
+      _meta: {
+        done: true,
+        fromCache: false,
+        provider: 'ups'
+      }
+    }
+  }
+  
+  throw new Error('No tracking data from UPS')
+}
+
 module.exports = async (req, res) => {
   // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -205,8 +306,13 @@ module.exports = async (req, res) => {
   try {
     const parcelsApiKey = process.env.PARCELS_API_TOKEN
     const trackingMoreApiKey = process.env.TRACKINGMORE_API_KEY
+    const upsAccessKey = process.env.UPS_ACCESS_KEY
+    const upsUserId = process.env.UPS_USER_ID
+    const upsPassword = process.env.UPS_PASSWORD
     const track17ApiKey = process.env.TRACK17_API_KEY
-    const provider = process.env.TRACKING_PROVIDER || 'auto' // 'parcelsapp', 'trackingmore', '17track', o 'auto'
+    const provider = process.env.TRACKING_PROVIDER || 'auto' // 'parcelsapp', 'trackingmore', 'ups', '17track', o 'auto'
+    
+    const upsConfigured = !!(upsAccessKey && upsUserId && upsPassword)
     
     // Forza l'URL corretto anche se è configurato quello vecchio su Vercel
     let parcelsBase = process.env.PARCELS_API_BASE || 'https://parcelsapp.com/api/v3'
@@ -220,7 +326,7 @@ module.exports = async (req, res) => {
     // Test endpoint - return detailed configuration status
     if (req.query.test === 'true') {
       const testResult = {
-        configured: !!(parcelsApiKey || trackingMoreApiKey || track17ApiKey),
+        configured: !!(parcelsApiKey || trackingMoreApiKey || upsConfigured || track17ApiKey),
         provider: provider,
         parcelsApp: {
           configured: !!parcelsApiKey,
@@ -234,18 +340,26 @@ module.exports = async (req, res) => {
           tokenLength: trackingMoreApiKey ? trackingMoreApiKey.length : 0,
           baseUrl: 'https://api.trackingmore.com/v4'
         },
+        ups: {
+          configured: upsConfigured,
+          hasAccessKey: !!upsAccessKey,
+          hasUserId: !!upsUserId,
+          hasPassword: !!upsPassword,
+          baseUrl: 'https://onlinetools.ups.com/api/track'
+        },
         track17: {
           configured: !!track17ApiKey,
           hasToken: !!track17ApiKey,
           tokenLength: track17ApiKey ? track17ApiKey.length : 0,
           baseUrl: 'https://api.17track.net/track/v2.2'
         },
-        message: (parcelsApiKey || trackingMoreApiKey || track17ApiKey) ? 'Proxy is configured correctly' : 'No API keys configured',
+        message: (parcelsApiKey || trackingMoreApiKey || upsConfigured || track17ApiKey) ? 'Proxy is configured correctly' : 'No API keys configured',
         nodeVersion: process.version,
         environment: process.env.NODE_ENV || 'production',
         apiDocumentation: {
           parcelsapp: 'https://parcelsapp.com/api-docs/',
           trackingmore: 'https://www.trackingmore.com/tracking-api',
+          ups: 'https://developer.ups.com',
           track17: 'https://www.17track.net/en/api'
         }
       }
@@ -267,14 +381,44 @@ module.exports = async (req, res) => {
         }
       }
       
+      // Test UPS OAuth
+      if (upsConfigured) {
+        try {
+          const basicAuth = Buffer.from(`${upsUserId}:${upsPassword}`).toString('base64')
+          const oauthUrl = 'https://wwwcie.ups.com/security/v1/oauth/token'
+          const oauthResponse = await fetch(oauthUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'Authorization': `Basic ${basicAuth}`,
+              'x-merchant-id': upsAccessKey
+            },
+            body: new URLSearchParams({ grant_type: 'client_credentials' }),
+            signal: AbortSignal.timeout(10000)
+          })
+          testResult.ups.apiReachable = oauthResponse.ok
+          testResult.ups.apiStatus = oauthResponse.status
+          if (oauthResponse.ok) {
+            const oauthData = await oauthResponse.json()
+            testResult.ups.hasToken = !!oauthData.access_token
+          } else {
+            const errorText = await oauthResponse.text()
+            testResult.ups.apiError = errorText
+          }
+        } catch (e) {
+          testResult.ups.apiReachable = false
+          testResult.ups.apiError = e.message
+        }
+      }
+      
       return res.status(200).json(testResult)
     }
     
-    if (!parcelsApiKey && !track17ApiKey) {
+    if (!parcelsApiKey && !trackingMoreApiKey && !upsConfigured && !track17ApiKey) {
       console.error('No API keys configured')
       return res.status(500).json({ 
         error: 'No API keys configured',
-        message: 'Please set PARCELS_API_TOKEN or TRACK17_API_KEY in Vercel environment variables',
+        message: 'Please set at least one: PARCELS_API_TOKEN, TRACKINGMORE_API_KEY, UPS_ACCESS_KEY+UPS_USER_ID+UPS_PASSWORD, or TRACK17_API_KEY in Vercel environment variables',
         hint: 'Go to Vercel Dashboard → Project Settings → Environment Variables'
       })
     }
@@ -320,10 +464,11 @@ module.exports = async (req, res) => {
 
     // Determina quale provider usare
     const useTrackingMore = provider === 'trackingmore' || (provider === 'auto' && trackingMoreApiKey)
-    const use17Track = provider === '17track' || (provider === 'auto' && track17ApiKey && !trackingMoreApiKey)
+    const useUPS = provider === 'ups' || (provider === 'auto' && upsConfigured)
+    const use17Track = provider === '17track' || (provider === 'auto' && track17ApiKey && !trackingMoreApiKey && !upsConfigured)
     
-    // Prova prima ParcelsApp (se configurato e provider non è solo trackingmore o 17track)
-    if (parcelsApiKey && provider !== 'trackingmore' && provider !== '17track') {
+    // Prova prima ParcelsApp (se configurato e provider non è solo trackingmore, ups o 17track)
+    if (parcelsApiKey && provider !== 'trackingmore' && provider !== 'ups' && provider !== '17track') {
       try {
         // Step 1: Create tracking request (POST)
         const trackingUrl = `${parcelsBase}/shipments/tracking`
@@ -381,6 +526,9 @@ module.exports = async (req, res) => {
             if (useTrackingMore && trackingMoreApiKey) {
               console.log(`[Tracking Proxy] ParcelsApp error, trying TrackingMore fallback...`)
               throw new Error('PARCELSAPP_ERROR')
+            } else if (useUPS && upsConfigured) {
+              console.log(`[Tracking Proxy] ParcelsApp error, trying UPS fallback...`)
+              throw new Error('PARCELSAPP_ERROR')
             } else if (use17Track && track17ApiKey) {
               console.log(`[Tracking Proxy] ParcelsApp error, trying 17Track fallback...`)
               throw new Error('PARCELSAPP_ERROR')
@@ -400,6 +548,9 @@ module.exports = async (req, res) => {
             // Se abbiamo fallback disponibili, provali
             if (useTrackingMore && trackingMoreApiKey) {
               console.log(`[Tracking Proxy] No UUID from ParcelsApp, trying TrackingMore fallback...`)
+              throw new Error('NO_UUID')
+            } else if (useUPS && upsConfigured) {
+              console.log(`[Tracking Proxy] No UUID from ParcelsApp, trying UPS fallback...`)
               throw new Error('NO_UUID')
             } else if (use17Track && track17ApiKey) {
               console.log(`[Tracking Proxy] No UUID from ParcelsApp, trying 17Track fallback...`)
@@ -467,14 +618,37 @@ module.exports = async (req, res) => {
         return res.status(200).json(trackingMoreData)
       } catch (trackingMoreError) {
         console.error(`[Tracking Proxy] TrackingMore error:`, trackingMoreError)
-        // Se TrackingMore fallisce, prova 17Track come ultimo fallback
-        if (use17Track && track17ApiKey) {
+          // Se TrackingMore fallisce, prova UPS o 17Track come fallback
+        if (useUPS && upsConfigured) {
+          console.log(`[Tracking Proxy] TrackingMore failed, trying UPS fallback...`)
+        } else if (use17Track && track17ApiKey) {
           console.log(`[Tracking Proxy] TrackingMore failed, trying 17Track fallback...`)
         } else {
           return res.status(500).json({
             error: 'TrackingMore API error',
             message: trackingMoreError.message,
             hint: 'Verifica che TRACKINGMORE_API_KEY sia configurato correttamente su Vercel. Ottieni una chiave gratuita su https://www.trackingmore.com/tracking-api'
+          })
+        }
+      }
+    }
+
+    // Fallback a UPS se configurato
+    if (useUPS && upsConfigured) {
+      try {
+        console.log(`[Tracking Proxy] Using UPS API...`)
+        const upsData = await trackWithUPS(tracking, upsAccessKey, upsUserId, upsPassword)
+        return res.status(200).json(upsData)
+      } catch (upsError) {
+        console.error(`[Tracking Proxy] UPS error:`, upsError)
+        // Se UPS fallisce, prova 17Track come ultimo fallback
+        if (use17Track && track17ApiKey) {
+          console.log(`[Tracking Proxy] UPS failed, trying 17Track fallback...`)
+        } else {
+          return res.status(500).json({
+            error: 'UPS API error',
+            message: upsError.message,
+            hint: 'Verifica che UPS_ACCESS_KEY, UPS_USER_ID e UPS_PASSWORD siano configurati correttamente su Vercel. Registrati su https://developer.ups.com'
           })
         }
       }
@@ -499,7 +673,7 @@ module.exports = async (req, res) => {
     // Se arriviamo qui, nessun provider ha funzionato
     return res.status(500).json({
       error: 'No tracking provider available',
-      hint: 'Configura almeno una di queste: PARCELS_API_TOKEN, TRACKINGMORE_API_KEY, o TRACK17_API_KEY su Vercel'
+      hint: 'Configura almeno una di queste: PARCELS_API_TOKEN, TRACKINGMORE_API_KEY, UPS_ACCESS_KEY+UPS_USER_ID+UPS_PASSWORD, o TRACK17_API_KEY su Vercel'
     })
 
   } catch (error) {
