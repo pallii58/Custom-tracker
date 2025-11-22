@@ -252,21 +252,38 @@ module.exports = async (req, res) => {
     } catch (fetchError) {
       console.error('[Parcels Proxy] Fetch error:', fetchError)
       
-      return res.status(502).json({
+      // Fornisci dettagli più specifici in base al tipo di errore
+      let errorDetails = {
         error: 'proxy error',
-        details: fetchError.message,
-        code: fetchError.code,
+        message: fetchError.message,
         name: fetchError.name,
-        hint: 'Check that PARCELS_API_TOKEN is correctly set in Vercel environment variables'
-      })
+        code: fetchError.code
+      }
+      
+      if (fetchError.name === 'AbortError' || fetchError.name === 'TimeoutError') {
+        errorDetails.hint = 'La richiesta è scaduta. L\'API potrebbe essere lenta o non raggiungibile.'
+        errorDetails.type = 'TimeoutError'
+      } else if (fetchError.code === 'ENOTFOUND' || fetchError.code === 'ECONNREFUSED') {
+        errorDetails.hint = 'Impossibile connettersi all\'API. Verifica che l\'URL base sia corretto: https://parcelsapp.com/api/v3'
+        errorDetails.type = 'ConnectionError'
+        errorDetails.baseUrl = base
+      } else {
+        errorDetails.hint = 'Errore durante la richiesta all\'API ParcelsApp. Verifica che PARCELS_API_TOKEN sia configurato correttamente su Vercel.'
+        errorDetails.type = 'FetchError'
+      }
+      
+      return res.status(502).json(errorDetails)
     }
 
   } catch (error) {
     console.error('[Parcels Proxy] Unexpected error:', error)
     return res.status(500).json({ 
       error: 'proxy error', 
+      message: error.message,
       details: error.message,
       name: error.name,
+      type: 'UnexpectedError',
+      hint: 'Errore imprevisto nel proxy. Controlla i log di Vercel per maggiori dettagli.',
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     })
   }
